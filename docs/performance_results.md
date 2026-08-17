@@ -135,3 +135,55 @@ refresh=1 へ戻して精度を守り、性能未達を記録する。閾値を�
 E2E テストは CPU 描画時間だけを assert し、receive→draw は
 `scripts/validate_performance.py` が判定できるよう JSON に書き出す。こうすることで、
 CI 機で必ず落ちるテストにも、通るまで閾値を緩めた判定にもならない。
+
+### 手順40 / 成功条件10: 録画+実CUDA推論の本番相当E2E — 2026-08-17
+
+- **コマンド:** `just test-e2e-recorded-cuda`
+- **経路:** `test10.avi` → **実CUDA FaceMesh推論**（Python 3.10環境）→ 採用IPC（2レーン）→
+  12点SQPNP → `/ws/pose` → 非対称投影 WebGL2。**合成入力は一切使用していない。**
+- **プロファイル:** `hardware_profile.local.json`（15 cm / 12°）+ tagcal実測 `K,D` + 個人メッシュ
+- **producer:** `--source test10.avi --pacing realtime --backend cuda --max-frames 120`
+- **raw:** `artifacts/perf/recorded_cuda_e2e.json`
+
+| 指標 | 実測 | 閾値 | 判定 |
+| :--- | ---: | ---: | :--- |
+| 推論完了→WebGL median | 60.674 ms | ≤ 33 ms | **FAIL** |
+| 推論完了→WebGL p95 | 87.829 ms | ≤ 60 ms | **FAIL** |
+| receive→draw p95 | 67.200 ms | ≤ 16.7 ms | FAIL |
+| CPU 描画 p95 | 0.800 ms | ≤ 4 ms | PASS |
+| **プレビュー解像度** | **640 × 360** | 640×360 | **PASS** |
+| sequence 逆転 | 0 | 0 | PASS |
+| renderer | WebGL2 | — | — |
+| source | `ipc` | — | — |
+| 描画間隔 p50 | 493.200 ms | — | — |
+
+**通ったこと:** 録画から実CUDA推論を経て2レーンIPC・実測内部パラメータ・個人メッシュ・
+確認済み設置値を通り、WebGL2 の非対称投影まで**production経路がそのまま動作した**。
+プレビューは 640×360 で届き、サーバーは再エンコードしていない。sequence 逆転は0。
+
+**未達:** 推論完了→WebGL の median 60.674 ms / p95 87.829 ms は閾値を超える。ただし
+内訳を見ると **receive→draw だけで p95 67.200 ms** を占め、その下限である描画間隔 p50 は
+**493.2 ms** である。成功条件9と同じく、headless Chromium の requestAnimationFrame 絞りが
+支配的であり、認識側やIPC側の遅さではない（CPU描画は 0.800 ms）。
+
+**閾値は緩めない。成功条件10は未達のまま残す。**正しい判定には物理ディスプレイ上での
+再計測が必要で、それは実カメラ受け入れと同じく本作業の非ゴールである。
+
+### 判定器の総合結果（`scripts/validate_performance.py`）
+
+`artifacts/perf/verdict.json`。
+
+| 条件 | チェック | 判定 |
+| :--- | :--- | :--- |
+| 前提 | clock_uncertainty | PASS |
+| 成功条件4 | cuda_provider | PASS |
+| 成功条件5 | frame_completeness | PASS |
+| 成功条件5 | accuracy_vs_full_detect | PASS（既定が全検出のため差は定義上ゼロ。最適化を検証して通したのではない） |
+| 成功条件6 | recognition_latency | **FAIL** |
+| 成功条件7 | control_transport | PASS |
+| 成功条件8 | preview_lane | PASS |
+| 成功条件9 | browser_draw | **FAIL** |
+| 成功条件10 | inference_to_webgl | **FAIL** |
+
+**総合 FAIL（9件中3件）。** 3件の未達はいずれも数値と原因を上に記録してあり、
+閾値の緩和も未計測の pass 扱いも行っていない。
