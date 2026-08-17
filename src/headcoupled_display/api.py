@@ -340,15 +340,17 @@ def _register_websocket_routes(application: FastAPI, runtime: RuntimeCoordinator
     @application.websocket("/ws/pose")
     async def pose_websocket(websocket: WebSocket) -> None:
         await websocket.accept()
-        sequence = -1
+        # Subscribers follow the coordinator's generation, not TrackingState.sequence:
+        # a "tracking stalled" notice has to reach clients even though the provider
+        # produced no new frame to number it with.
+        generation = 0
         try:
             while True:
                 try:
-                    state = await runtime.wait_for_state(sequence)
+                    generation, state = await runtime.wait_for_state(generation)
                 except TimeoutError:
-                    await websocket.send_json({"type": "heartbeat", "sequence": sequence})
+                    await websocket.send_json({"type": "heartbeat", "sequence": generation})
                     continue
-                sequence = state.sequence
                 await websocket.send_json(
                     {"type": "tracking", "payload": state.model_dump(mode="json")}
                 )
@@ -358,11 +360,11 @@ def _register_websocket_routes(application: FastAPI, runtime: RuntimeCoordinator
     @application.websocket("/ws/camera")
     async def camera_websocket(websocket: WebSocket) -> None:
         await websocket.accept()
-        sequence = -1
+        generation = 0
         try:
             while True:
                 try:
-                    sequence, frame = await runtime.wait_for_frame(sequence)
+                    generation, frame = await runtime.wait_for_frame(generation)
                 except TimeoutError:
                     continue
                 await websocket.send_bytes(frame)
