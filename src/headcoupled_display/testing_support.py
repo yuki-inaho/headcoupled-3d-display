@@ -1,11 +1,17 @@
-"""Temporary localhost allowance for locked-down CI Chromium installations."""
+"""Test-only helpers: Chromium policy relaxation and guaranteed child-process cleanup."""
 
 from __future__ import annotations
 
 import json
+import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+
+#: Seconds to wait for a child to exit after SIGTERM before escalating to SIGKILL.
+TERMINATE_GRACE_S = 5.0
+#: Seconds to wait after SIGKILL before giving up and reporting the survivor.
+KILL_GRACE_S = 5.0
 
 
 def _read_blocking_policy(path: Path) -> tuple[bytes, dict[str, object]] | None:
@@ -68,3 +74,42 @@ def allow_localhost_for_managed_chromium() -> Iterator[None]:
     finally:
         for path, original in backups.items():
             path.write_bytes(original)
+
+
+def terminate_child(process: subprocess.Popen[str] | subprocess.Popen[bytes]) -> None:
+    """Stop a test-owned child process and do not return while it is still alive.
+
+    ``Popen.terminate()`` alone only *requests* an exit; a server wedged in a blocking
+    call keeps the port bound and the camera open, so the next test fails for reasons
+    that have nothing to do with the code under test. This escalates TERM -> KILL and
+    raises if even KILL leaves the process behind, rather than letting a leak pass
+    silently as a clean run.
+    """
+
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=TERMINATE_GRACE_S)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    process.kill()
+    try:
+        process.wait(timeout=KILL_GRACE_S)
+    except subprocess.TimeoutExpired as exc:  # pragma: no cover - requires an unkillable child
+        raise RuntimeError(
+            f"child process {process.pid} survived SIGKILL; a port or camera may stay held"
+        ) from exc
+
+
+@contextmanager
+def managed_child(
+    process: subprocess.Popen[str] | subprocess.Popen[bytes],
+) -> Iterator[subprocess.Popen[str] | subprocess.Popen[bytes]]:
+    """Guarantee :func:`terminate_child` runs even when the test body raises."""
+
+    try:
+        yield process
+    finally:
+        terminate_child(process)
