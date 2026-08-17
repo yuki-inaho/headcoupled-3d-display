@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import base64
+import json
 from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from headcoupled_display.api import create_app
 from headcoupled_display.face_model import canonical_face_model
@@ -19,9 +22,48 @@ def make_client() -> TestClient:
     app = create_app(
         profile_path=ROOT / "config" / "hardware_profile.demo.json",
         user_profile_path=ROOT / "config" / "user_profile.demo.json",
+        scene_path=ROOT / "config" / "scene_profile.default.json",
         source="synthetic",
     )
     return TestClient(app)
+
+
+def test_profile_endpoint_exposes_the_scene_separately_from_calibration() -> None:
+    with make_client() as client:
+        payload = client.get("/api/profile").json()
+        scene = payload["scene_profile"]
+
+        assert scene["point_cloud_asset"] == "/static/assets/bunny.pcd"
+        assert scene["anchor_display_m"] == [0.0, 0.0, 0.0]
+        assert scene["longest_edge_m"] == 0.24
+        assert scene["grid_spacing_m"] == 0.05
+        assert scene["back_wall_z_m"] == -0.3
+        assert scene["floor_y_m"] == -0.14
+        # The scene must not leak into, or be derived from, the calibrated mount geometry.
+        assert "longest_edge_m" not in payload["hardware_profile"]
+        assert payload["mount_summary"]["height_above_center_cm"] == 20.0
+
+
+def test_scene_profile_with_a_back_wall_in_front_of_the_screen_is_refused(tmp_path: Path) -> None:
+    broken = tmp_path / "scene.json"
+    broken.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "scene_id": "wall-in-front",
+                "point_cloud_asset": "/static/assets/bunny.pcd",
+                "back_wall_z_m": 0.1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValidationError):
+        create_app(
+            profile_path=ROOT / "config" / "hardware_profile.demo.json",
+            user_profile_path=ROOT / "config" / "user_profile.demo.json",
+            scene_path=broken,
+            source="synthetic",
+        )
 
 
 def test_profile_and_runtime_endpoints() -> None:

@@ -286,3 +286,171 @@ def test_recorded_facemesh_replay_drives_dashboard(tmp_path: Path) -> None:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=5)
+
+
+@pytest.mark.e2e
+def test_browser_pcd_loader_reports_known_bunny_bounds() -> None:
+    """`loadAsciiPcd` must report the AABB of the parsed points, not only positions.
+
+    Expected values for `static/assets/bunny.pcd` (13,810 points) were computed
+    independently with NumPy over the same file, outside of this test and outside
+    of `pcd.js`. `center` here is the AABB midpoint `(min + max) / 2`, which is
+    NOT the point centroid (`(-0.00378993, 0.22580822, 0.05619751)`); the two must
+    not be confused. This test calls the real browser-side `loadAsciiPcd` via a
+    dynamic import so a bug in `pcd.js` cannot be hidden by a Python-side
+    recomputation of the bounds.
+    """
+    port = free_port()
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYTHONPATH": str(ROOT / "src"),
+            "HEADCOUPLED_PROFILE": str(ROOT / "config" / "hardware_profile.demo.json"),
+            "HEADCOUPLED_SOURCE": "synthetic",
+        }
+    )
+    command = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "headcoupled_display.api:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--log-level",
+        "warning",
+    ]
+    process = subprocess.Popen(
+        command,
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        wait_for_server(f"{base_url}/api/health", process)
+        with allow_localhost_for_managed_chromium(), sync_playwright() as playwright:
+            executable_path = os.getenv("HEADCOUPLED_CHROMIUM")
+            browser = playwright.chromium.launch(
+                headless=True,
+                executable_path=executable_path or None,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--enable-webgl",
+                    "--ignore-gpu-blocklist",
+                    "--use-angle=swiftshader",
+                ],
+            )
+            page = browser.new_page()
+            # Navigate to the dashboard origin first so the dynamic import below and
+            # the PCD fetch inside loadAsciiPcd are same-origin (no CORS involved).
+            page.goto(base_url, wait_until="domcontentloaded")
+            loaded = page.evaluate(
+                """async () => {
+                    const module = await import("/static/pcd.js");
+                    const result = await module.loadAsciiPcd("/static/assets/bunny.pcd");
+                    return { pointCount: result.pointCount, bounds: result.bounds };
+                }"""
+            )
+            browser.close()
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert loaded["pointCount"] == 13810
+    assert loaded["bounds"] is not None, f"loadAsciiPcd must return bounds, got: {loaded}"
+    assert loaded["bounds"]["min"] == pytest.approx([-0.5836868, -0.5006086, -0.5753633], abs=1e-6)
+    assert loaded["bounds"]["max"] == pytest.approx([0.5809016, 1.1862427, 0.4353630], abs=1e-6)
+    assert loaded["bounds"]["center"] == pytest.approx(
+        [-0.0013926, 0.34281705, -0.07000015], abs=1e-6
+    )
+
+
+@pytest.mark.e2e
+def test_point_cloud_is_anchored_on_the_display_plane() -> None:
+    """The scene profile, not the renderer, decides where the cloud sits.
+
+    Asserts the placement numerically from the renderer's own dataset readout so a
+    screenshot that merely looks plausible cannot pass this test.
+    """
+    port = free_port()
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYTHONPATH": str(ROOT / "src"),
+            "HEADCOUPLED_PROFILE": str(ROOT / "config" / "hardware_profile.demo.json"),
+            "HEADCOUPLED_SCENE": str(ROOT / "config" / "scene_profile.default.json"),
+            "HEADCOUPLED_SOURCE": "synthetic",
+        }
+    )
+    command = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "headcoupled_display.api:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--log-level",
+        "warning",
+    ]
+    process = subprocess.Popen(
+        command,
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        wait_for_server(f"{base_url}/api/health", process)
+        with allow_localhost_for_managed_chromium(), sync_playwright() as playwright:
+            executable_path = os.getenv("HEADCOUPLED_CHROMIUM")
+            browser = playwright.chromium.launch(
+                headless=True,
+                executable_path=executable_path or None,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--enable-webgl",
+                    "--ignore-gpu-blocklist",
+                    "--use-angle=swiftshader",
+                ],
+            )
+            page = browser.new_page()
+            page.goto(base_url, wait_until="domcontentloaded")
+            canvas = page.locator("#gl-canvas")
+            canvas.wait_for(state="attached")
+            page.wait_for_function(
+                "() => document.querySelector('#gl-canvas')?.dataset.rendererReady === 'true'",
+                timeout=20000,
+            )
+            scale = float(canvas.get_attribute("data-model-scale"))
+            centre = json.loads(canvas.get_attribute("data-model-center-display-m"))
+            minimum = json.loads(canvas.get_attribute("data-model-min-display-m"))
+            maximum = json.loads(canvas.get_attribute("data-model-max-display-m"))
+            scene_id = canvas.get_attribute("data-scene-id")
+            browser.close()
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+
+    assert scene_id == "bunny-on-display-plane"
+    # The AABB midpoint must land exactly on the screen plane anchor (0, 0, 0).
+    assert centre == pytest.approx([0.0, 0.0, 0.0], abs=1e-6)
+    # Uniform scale derived from the asset, not hard-coded: 0.24 m / 1.6868513 m.
+    assert scale == pytest.approx(0.142276916, rel=1e-6)
+    span = [maximum[axis] - minimum[axis] for axis in range(3)]
+    assert max(span) == pytest.approx(0.24, abs=1e-6)
+    # The cloud straddles the window, so front and back show opposite parallax.
+    assert minimum[2] < 0.0 < maximum[2]

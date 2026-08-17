@@ -254,3 +254,49 @@ class RuntimeStatus(StrictModel):
     profile_id: str
     provenance: str
     last_error: str | None = None
+
+
+class SceneProfile(StrictModel):
+    """What is drawn and where it sits relative to the display plane.
+
+    Kept separate from :class:`HardwareProfile` on purpose. The hardware profile is a
+    calibration artefact; this one is a presentation choice. Merging them would make a
+    change of subject matter indistinguishable from a change of measured geometry.
+
+    Display frame: origin at the centre of the active area, +X right, +Y up, +Z toward
+    the observer. The screen surface is the plane z=0, so a negative z is behind the
+    window and a positive z is in front of it.
+    """
+
+    schema_version: int = 1
+    scene_id: str
+    point_cloud_asset: str
+    anchor_display_m: Vector3 = (0.0, 0.0, 0.0)
+    longest_edge_m: float = Field(default=0.24, gt=0.0)
+    grid_spacing_m: float = Field(default=0.05, gt=0.0)
+    back_wall_z_m: float = Field(default=-0.30, lt=0.0)
+    floor_y_m: float = -0.14
+    floor_near_z_m: float = 0.05
+    floor_far_z_m: float = -0.30
+    quality_metrics: dict[str, float | str | int | bool | None] = Field(default_factory=dict)
+    notes: tuple[str, ...] = ()
+    created_at: str = Field(default_factory=utc_now_iso)
+
+    @model_validator(mode="after")
+    def validate_scene(self) -> SceneProfile:
+        if self.schema_version != 1:
+            raise ValueError(f"unsupported scene profile schema: {self.schema_version}")
+        if self.floor_far_z_m >= self.floor_near_z_m:
+            raise ValueError("floor_far_z_m must be further from the observer than floor_near_z_m")
+        if self.floor_far_z_m < self.back_wall_z_m:
+            raise ValueError("the floor may not extend past the back wall")
+        return self
+
+    @classmethod
+    def load(cls, path: Path) -> SceneProfile:
+        with path.open(encoding="utf-8") as handle:
+            return cls.model_validate(json.load(handle))
+
+    def save(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self.model_dump_json(indent=2) + "\n", encoding="utf-8")

@@ -23,6 +23,10 @@ def serve(
     port: Annotated[int, typer.Option(min=1, max=65535)] = 8000,
     profile: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
     user_profile: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
+    scene: Annotated[
+        Path | None,
+        typer.Option(exists=True, dir_okay=False, help="Scene profile: what is drawn and where"),
+    ] = None,
     source: Annotated[TrackingSource, typer.Option()] = "synthetic",
     camera_device: Annotated[
         str, typer.Option(help="V4L2 device path (use /dev/video0 on this machine)")
@@ -55,6 +59,7 @@ def serve(
     application = create_app(
         profile_path=profile or default_hardware_profile_path(),
         user_profile_path=user_profile,
+        scene_path=scene,
         source=source,
         camera_device=camera_device,
         backend=backend,

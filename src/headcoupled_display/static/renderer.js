@@ -66,10 +66,62 @@ function projectionForDisplay(display, eye, near = 0.05, far = 8.0) {
   return frustumMatrix(left, right, bottom, top, near, far);
 }
 
+/**
+ * Build `T(anchor) * S * T(-aabb_center)` for a cloud with the given bounds.
+ *
+ * Nothing about the asset's own coordinates is assumed: the scale comes from its
+ * longest bounding-box edge and the offset from its bounding-box midpoint, so
+ * swapping the asset cannot silently move the scene relative to the screen.
+ * The midpoint is used rather than the centroid because the centroid follows
+ * point density, which is a property of the scan, not of what should be framed.
+ *
+ * @param {{anchor_display_m: number[], longest_edge_m: number}} scene
+ * @param {{min: number[], max: number[], center: number[]}} bounds
+ * @returns {Float32Array} Column-major 4x4 model matrix.
+ */
+function modelMatrixForBounds(scene, bounds) {
+  const span = [
+    bounds.max[0] - bounds.min[0],
+    bounds.max[1] - bounds.min[1],
+    bounds.max[2] - bounds.min[2],
+  ];
+  const longestEdge = Math.max(span[0], span[1], span[2]);
+  if (!Number.isFinite(longestEdge) || longestEdge <= 0) {
+    throw new Error("Point cloud bounding box is degenerate; cannot derive a uniform scale");
+  }
+  const scale = scene.longest_edge_m / longestEdge;
+  const anchor = scene.anchor_display_m;
+  return multiplyMat4(
+    translationMatrix(
+      anchor[0] - scale * bounds.center[0],
+      anchor[1] - scale * bounds.center[1],
+      anchor[2] - scale * bounds.center[2],
+    ),
+    scaleMatrix(scale),
+  );
+}
+
+function transformPoint(matrix, point) {
+  return [0, 1, 2].map(
+    (row) =>
+      matrix[row] * point[0] +
+      matrix[4 + row] * point[1] +
+      matrix[8 + row] * point[2] +
+      matrix[12 + row],
+  );
+}
+
 export class PointCloudRenderer {
-  constructor(canvas, display) {
+  constructor(canvas, display, scene) {
+    if (!scene || !Array.isArray(scene.anchor_display_m) || !(scene.longest_edge_m > 0)) {
+      // No implicit default: a missing scene profile is a configuration error, and
+      // silently guessing a placement would make a broken deployment look correct.
+      throw new Error("PointCloudRenderer requires a scene profile from /api/profile");
+    }
     this.canvas = canvas;
     this.display = display;
+    this.scene = scene;
+    this.model = null;
     this.eye = [0, 0, 0.67];
     this.pointCount = 0;
     this.positions = null;
@@ -136,6 +188,10 @@ export class PointCloudRenderer {
     this.positions = cloud.positions;
     this.colors = cloud.colors;
     this.pointCount = cloud.pointCount;
+    this.bounds = cloud.bounds;
+    // Computed once per asset, not per frame: the placement only depends on the
+    // asset and the scene profile, neither of which changes while drawing.
+    this.model = modelMatrixForBounds(this.scene, cloud.bounds);
     if (this.gl) {
       const gl = this.gl;
       gl.bindVertexArray(this.vao);
@@ -149,8 +205,18 @@ export class PointCloudRenderer {
       gl.vertexAttribPointer(this.colorLocation, 3, gl.FLOAT, false, 0, 0);
       gl.bindVertexArray(null);
     }
+    // Exposed so end-to-end tests can assert the placement numerically instead of
+    // inferring it from a screenshot.
+    const placedCenter = transformPoint(this.model, cloud.bounds.center);
+    const placedMin = transformPoint(this.model, cloud.bounds.min);
+    const placedMax = transformPoint(this.model, cloud.bounds.max);
     this.canvas.dataset.rendererReady = "true";
     this.canvas.dataset.rendererMode = this.mode;
+    this.canvas.dataset.sceneId = this.scene.scene_id ?? "";
+    this.canvas.dataset.modelScale = String(this.model[0]);
+    this.canvas.dataset.modelCenterDisplayM = JSON.stringify(placedCenter);
+    this.canvas.dataset.modelMinDisplayM = JSON.stringify(placedMin);
+    this.canvas.dataset.modelMaxDisplayM = JSON.stringify(placedMax);
     return { pointCount: cloud.pointCount, mode: this.mode };
   }
 
@@ -175,11 +241,10 @@ export class PointCloudRenderer {
     gl.clearColor(0.025, 0.035, 0.052, 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.enable(gl.DEPTH_TEST);
-    if (this.pointCount === 0) return;
+    if (this.pointCount === 0 || !this.model) return;
     const projection = projectionForDisplay(this.display, this.eye);
     const view = translationMatrix(-this.eye[0], -this.eye[1], -this.eye[2]);
-    const model = multiplyMat4(translationMatrix(0, -0.055, -0.42), scaleMatrix(0.21));
-    const mvp = multiplyMat4(projection, multiplyMat4(view, model));
+    const mvp = multiplyMat4(projection, multiplyMat4(view, this.model));
     gl.useProgram(this.program);
     gl.uniformMatrix4fv(this.mvpLocation, false, mvp);
     gl.uniform1f(this.pointSizeLocation, Math.min(window.devicePixelRatio || 1, 2) * 2.15);
@@ -194,17 +259,18 @@ export class PointCloudRenderer {
     const height = this.canvas.height;
     ctx.fillStyle = "#07101c";
     ctx.fillRect(0, 0, width, height);
-    if (!this.positions || !this.colors) return;
+    if (!this.positions || !this.colors || !this.model) return;
     const eye = this.eye;
-    const modelScale = 0.21;
-    const modelY = -0.055;
-    const modelZ = -0.42;
+    // Same model matrix as the WebGL path. Duplicating the placement constants here
+    // is what let the two paths drift apart before; only the rasterizer differs now.
+    const model = this.model;
+    const scale = model[0];
     const stride = this.pointCount > 6000 ? 3 : 1;
     for (let index = 0; index < this.pointCount; index += stride) {
       const offset = index * 3;
-      const px = this.positions[offset] * modelScale;
-      const py = this.positions[offset + 1] * modelScale + modelY;
-      const pz = this.positions[offset + 2] * modelScale + modelZ;
+      const px = this.positions[offset] * scale + model[12];
+      const py = this.positions[offset + 1] * scale + model[13];
+      const pz = this.positions[offset + 2] * scale + model[14];
       const denominator = eye[2] - pz;
       if (denominator <= 0.01) continue;
       const ratio = eye[2] / denominator;

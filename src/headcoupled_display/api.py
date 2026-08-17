@@ -16,7 +16,13 @@ from fastapi.staticfiles import StaticFiles
 
 from .calibration import fit_display_transform
 from .face_model import load_personal_face_model
-from .models import CalibrationDataset, HardwareProfile, TrackingSource, UserProfile
+from .models import (
+    CalibrationDataset,
+    HardwareProfile,
+    SceneProfile,
+    TrackingSource,
+    UserProfile,
+)
 from .profiles import (
     load_tagcal_calibration,
     load_user_profile,
@@ -69,6 +75,18 @@ def default_user_profile_path() -> Path:
     return _first_existing(candidates)
 
 
+def default_scene_profile_path() -> Path:
+    configured = os.getenv("HEADCOUPLED_SCENE")
+    candidates = [] if not configured else [Path(configured).expanduser()]
+    candidates.extend(
+        [
+            Path.cwd() / "config" / "scene_profile.default.json",
+            RESOURCE_ROOT / "scene_profile.default.json",
+        ]
+    )
+    return _first_existing(candidates)
+
+
 def _provider_factory(
     source: TrackingSource,
     hardware: HardwareProfile,
@@ -109,6 +127,7 @@ def _provider_factory(
 class _ApplicationContext:
     hardware: HardwareProfile
     user: UserProfile
+    scene: SceneProfile
     runtime: RuntimeCoordinator
     source: TrackingSource
     ipc_input: IpcFaceMeshInput | None
@@ -159,6 +178,7 @@ def _build_context(
     *,
     profile_path: Path | None = None,
     user_profile_path: Path | None = None,
+    scene_path: Path | None = None,
     source: TrackingSource | None = None,
     camera_device: str = "/dev/video0",
     backend: str = "cpu",
@@ -173,6 +193,7 @@ def _build_context(
         ),
         intrinsics_path,
     )
+    scene = SceneProfile.load(scene_path or default_scene_profile_path())
     user = load_user_profile(user_profile_path or default_user_profile_path())
     if face_model_path is not None:
         user = user.model_copy(
@@ -200,6 +221,7 @@ def _build_context(
     return _ApplicationContext(
         hardware=hardware,
         user=user,
+        scene=scene,
         runtime=runtime,
         source=selected_source,
         ipc_input=ipc_input,
@@ -224,9 +246,10 @@ def _lifespan(context: _ApplicationContext) -> Callable[[FastAPI], AsyncIterator
 
 
 def _register_http_routes(application: FastAPI, context: _ApplicationContext) -> None:
-    hardware, user, runtime, selected_source = (
+    hardware, user, scene, runtime, selected_source = (
         context.hardware,
         context.user,
+        context.scene,
         context.runtime,
         context.source,
     )
@@ -248,6 +271,7 @@ def _register_http_routes(application: FastAPI, context: _ApplicationContext) ->
         return {
             "hardware_profile": hardware.model_dump(mode="json"),
             "user_profile": user.model_dump(mode="json"),
+            "scene_profile": scene.model_dump(mode="json"),
             "mount_summary": summary.model_dump(mode="json"),
             "coordinate_convention": {
                 "display": "origin=center, +X=right, +Y=up, +Z=toward viewer",
@@ -350,6 +374,7 @@ def create_app(
     *,
     profile_path: Path | None = None,
     user_profile_path: Path | None = None,
+    scene_path: Path | None = None,
     source: TrackingSource | None = None,
     camera_device: str = "/dev/video0",
     backend: str = "cpu",
@@ -361,6 +386,7 @@ def create_app(
     context = _build_context(
         profile_path=profile_path,
         user_profile_path=user_profile_path,
+        scene_path=scene_path,
         source=source,
         camera_device=camera_device,
         backend=backend,

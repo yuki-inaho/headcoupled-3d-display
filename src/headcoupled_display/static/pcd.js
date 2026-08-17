@@ -1,3 +1,21 @@
+/**
+ * Parse an ASCII PCD file's text content.
+ *
+ * @param {string} text - Raw PCD file content.
+ * @returns {{
+ *   positions: Float32Array,
+ *   colors: Float32Array,
+ *   pointCount: number,
+ *   bounds: { min: number[], max: number[], center: number[] },
+ * }} Parsed point cloud. `bounds` is the axis-aligned bounding box (AABB) of
+ *   `positions`, computed in the same pass as parsing. `bounds.center` is the
+ *   AABB midpoint `(min + max) / 2`, NOT the point centroid.
+ * @throws {Error} If the PCD is malformed (see individual checks below), or if
+ *   it declares zero points. Zero points would make `min`/`max`/`center`
+ *   undefined (Infinity/-Infinity or NaN); rather than returning those
+ *   silently, this function throws so callers cannot mistake an empty cloud
+ *   for a valid one.
+ */
 export function parseAsciiPcd(text) {
   const lines = text.replace(/\r/g, "").split("\n");
   const header = new Map();
@@ -34,12 +52,27 @@ export function parseAsciiPcd(text) {
   const decoder = new ArrayBuffer(4);
   const floatView = new Float32Array(decoder);
   const intView = new Uint32Array(decoder);
+  let minX = Infinity;
+  let minY = Infinity;
+  let minZ = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let maxZ = -Infinity;
 
   for (let index = dataIndex; index < lines.length; index += 1) {
     const raw = lines[index].trim();
     if (!raw) continue;
     const values = raw.split(/\s+/);
-    positions.push(Number(values[xIndex]), Number(values[yIndex]), Number(values[zIndex]));
+    const x = Number(values[xIndex]);
+    const y = Number(values[yIndex]);
+    const z = Number(values[zIndex]);
+    positions.push(x, y, z);
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z;
+    if (z > maxZ) maxZ = z;
     if (rIndex >= 0 && gIndex >= 0 && bIndex >= 0) {
       colors.push(
         Number(values[rIndex]) / 255,
@@ -63,10 +96,19 @@ export function parseAsciiPcd(text) {
   if (requestedPoints > 0 && pointCount !== requestedPoints) {
     throw new Error(`PCD declared ${requestedPoints} points but parsed ${pointCount}`);
   }
+  if (pointCount === 0) {
+    throw new Error("PCD contains no points; cannot compute bounds");
+  }
+  const bounds = {
+    min: [minX, minY, minZ],
+    max: [maxX, maxY, maxZ],
+    center: [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2],
+  };
   return {
     positions: new Float32Array(positions),
     colors: new Float32Array(colors),
     pointCount,
+    bounds,
   };
 }
 

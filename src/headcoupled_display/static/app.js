@@ -37,8 +37,10 @@ async function loadProfile() {
     warning.textContent = `注意: ${payload.warning}`;
     document.body.dataset.demoProfile = "true";
   }
-  renderer = new PointCloudRenderer(byId("gl-canvas"), profile.display);
-  const info = await renderer.load("/static/assets/bunny.pcd");
+  const scene = payload.scene_profile;
+  if (!scene) throw new Error("Profile response carries no scene_profile");
+  renderer = new PointCloudRenderer(byId("gl-canvas"), profile.display, scene);
+  const info = await renderer.load(scene.point_cloud_asset);
   setText("renderer-status", `${info.mode} / ${info.pointCount.toLocaleString()} points`);
 }
 
