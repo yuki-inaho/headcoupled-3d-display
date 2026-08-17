@@ -2,7 +2,11 @@
   "schema_version": 1,
   "scene_id": "bunny-on-display-plane",
   "point_cloud_asset": "/static/assets/bunny.pcd",
-  "anchor_display_m": [0.0, 0.0, 0.0],
+  "anchor_display_m": [
+    0.0,
+    0.0,
+    0.0
+  ],
   "longest_edge_m": 0.24,
   "grid_spacing_m": 0.05,
   "back_wall_z_m": -0.3,
@@ -11,7 +15,7 @@
   "floor_far_z_m": -0.3,
   "quality_metrics": {
     "asset_point_count": 35947,
-    "asset_longest_edge_m": 0.1556990,
+    "asset_longest_edge_m": 0.155699,
     "derived_uniform_scale": 1.541435719
   },
   "notes": [
@@ -21,7 +25,7 @@
     "後壁z=-0.30 m、床y=-0.14 mは奥行き手掛かり用の明示値であり、実測値ではない。",
     "これは表示上の選択であり較正結果ではない。ハードウェアプロファイルとは別ファイルに保つこと。",
     "点群は本物のStanford Bunny(bun_zipper、35947頂点)。scripts/import_stanford_bunny.pyで変換。旧合成データ(13810点)からの差し替え(2026-08-17)。",
-    "生データは観察者と逆(-Z)を向いているためY軸まわり180度回転して取り込む。判定は頭部(y上位10%)のz重心と全体のz重心の比較で行い、変換後に符号が逆転することをスクリプトが検証する。",
+    "向きは生データのまま。bun_zipperは既に観察者(+Z)を向いている。以前は「頭部(y上位10%)のz重心」で向きを判定して180度回転させていたが、この機種では上位10%は耳であり耳は後方へ寝ているため常に「背を向けている」と誤判定する。回転は撤去した。",
     "色は高さに対する色相ランプ(虹色)。元PLYにRGBは無く、あるのはconfidenceと定数intensityだけなので、走査データを色として読み替えてはいない。表示上の選択でありアセット生成時に焼き込む。"
   ],
   "created_at": "2026-08-17T06:00:00+00:00"

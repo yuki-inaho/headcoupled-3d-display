@@ -21,9 +21,9 @@ from headcoupled_display.scene import scene_model_matrix
 # the real Stanford Bunny -- see scripts/import_stanford_bunny.py), computed
 # independently with NumPy over the file as written. ``center`` is the AABB
 # midpoint, not the centroid.
-BUNNY_MIN = (-0.0610091, 0.0329874, -0.0587997)
-BUNNY_MAX = (0.0946899, 0.1873210, 0.0618736)
-BUNNY_CENTER = (0.0168404, 0.11015420, 0.00153695)
+BUNNY_MIN = (-0.0946899, 0.0329874, -0.0618736)
+BUNNY_MAX = (0.0610091, 0.1873210, 0.0587997)
+BUNNY_CENTER = (-0.0168404, 0.11015420, -0.00153695)
 BUNNY_LONGEST_EDGE_M = 0.1556990
 
 

@@ -34,10 +34,10 @@ their respective licenses.
 Graphics Laboratory.
 
 It is converted from a local ASCII PLY by `scripts/import_stanford_bunny.py`, which
-retains every source vertex, turns the model 180 deg about Y so the head faces the
-viewer, and writes a height-based colour ramp. The geometry is the repository's; the
+retains every source vertex, keeps the source orientation, and writes a height-based
+colour ramp. The geometry is the repository's; the
 orientation and colour are this project's presentation choices, applied at asset-build
-time. SHA-256 of the converted file: `c4686da6ea24b02daf0b22512bd3d449c856f2ab1e7db07e6160582671c2ab0b`.
+time. SHA-256 of the converted file: `2e88b76737c7dceb39f13e6b418890406d57ab7b914f476c3732c6ab51755537`.
 
 **Usage terms:** the repository permits research use and free redistribution with
 attribution to the Stanford Computer Graphics Laboratory; commercial use or inclusion in

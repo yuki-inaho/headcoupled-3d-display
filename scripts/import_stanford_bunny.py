@@ -32,15 +32,23 @@ Design decisions
   sense the scene expects (ears at +Y, base/feet at -Y): its measured
   bounding box is X 0.1557 m, Y 0.1543 m, Z 0.1207 m, matching the commonly
   cited ~156x154x121 mm envelope for this exact reconstruction.
-* Heading: rotated 180 deg about Y (``rotate_y_180``). The raw PLY faces
-  -Z, but the display frame puts the observer at +Z (a head-coupled display
-  is meant to be looked *into*, so the subject should look back). Verified
-  numerically, not assumed: on the unrotated cloud the head (top 10% by Y)
-  has a mean Z of -0.0215 m against a whole-cloud mean Z of +0.0089 m, i.e.
-  the head leans away from the viewer; ``head_faces_viewer`` re-checks this
-  before and after the turn and ``main`` aborts if the direction is ever
-  wrong, so a future change to the input can't silently ship a
-  backwards-facing bunny.
+* Heading: kept as-is. bun_zipper already faces the observer (+Z).
+
+  This script briefly rotated the cloud 180 deg about Y. That was wrong and
+  the rotation has been removed. The check that justified it compared the
+  mean Z of the top 10% of points by height against the whole cloud's mean Z,
+  calling that slice "the head". On this model the top 10% by height is the
+  *ears*, and the bunny's ears sweep back over its body, so that slice leans
+  away from the viewer no matter which way the animal faces. The test
+  therefore reported "facing away" for a bunny that was facing forward, and
+  the "correction" turned it around. It was self-consistent -- it passed both
+  before and after the turn -- because the proxy itself was inverted, which
+  is exactly why a post-condition built from the same bad proxy proves
+  nothing.
+
+  Do not reintroduce an automatic heading check derived from a height slice.
+  The orientation of an arbitrary scan is not recoverable that way; this one
+  is fixed by the source data and confirmed on screen.
 * Colour: a rainbow ramp over height (``rainbow_colors``), not the uniform
   grey-blue the retired synthetic asset used. The source PLY carries no RGB
   -- only per-vertex ``confidence`` (registration quality from zippering,
@@ -90,33 +98,6 @@ HUE_SWEEP_DEG = -290.0
 #: wherever the third channel compensated.
 COLOR_SATURATION = 0.72
 COLOR_VALUE = 0.98
-
-
-def rotate_y_180(points: np.ndarray) -> np.ndarray:
-    """Turn the bunny to face the observer.
-
-    The display frame has +Z toward the viewer, and bun_zipper faces the other way.
-    Measured on the unrotated cloud: the head (the top 10% by Y, where the ears are)
-    has a mean Z of -0.0215 m while the whole cloud averages +0.0089 m, so the head
-    leans away from the viewer. A half turn about Y -- the axis the bunny stands on --
-    is the correction; it leaves the upright pose alone and only changes the heading.
-    """
-
-    turned = points.copy()
-    turned[:, 0] = -turned[:, 0]
-    turned[:, 2] = -turned[:, 2]
-    return turned
-
-
-def head_faces_viewer(points: np.ndarray) -> bool:
-    """True when the head leans toward +Z, i.e. toward the observer.
-
-    Used as a post-condition rather than a belief: the rotation above is only correct
-    if this flips, and a silently wrong-facing asset looks plausible on screen.
-    """
-
-    head = points[points[:, 1] > np.percentile(points[:, 1], 90)]
-    return float(head[:, 2].mean()) > float(points[:, 2].mean())
 
 
 def rainbow_colors(points: np.ndarray) -> np.ndarray:
@@ -352,14 +333,8 @@ def main() -> None:
             f"warning: expected 35947 vertices (bun_zipper), got {points.shape[0]} "
             f"from {args.input}; proceeding anyway"
         )
-    if head_faces_viewer(points):
-        raise SystemExit(
-            "the source cloud already faces the viewer; the half turn below would turn "
-            "it away. Re-check the input before changing this."
-        )
-    points = rotate_y_180(points)
-    if not head_faces_viewer(points):
-        raise SystemExit("the half turn about Y did not make the head face +Z")
+    # The source orientation is kept as-is: bun_zipper already faces the observer.
+    # See the module docstring for why the half turn this script used to apply was wrong.
     colors = rainbow_colors(points)
     write_ascii_pcd(
         args.output,

@@ -348,9 +348,11 @@ def test_browser_pcd_loader_reports_known_bunny_bounds() -> None:
     assert loaded["bounds"] is not None, f"loadAsciiPcd must return bounds, got: {loaded}"
     # The asset is written already turned to face the observer (+Z); see
     # scripts/import_stanford_bunny.py. These bounds are the turned cloud's.
-    assert loaded["bounds"]["min"] == pytest.approx([-0.0610091, 0.0329874, -0.0587997], abs=1e-6)
-    assert loaded["bounds"]["max"] == pytest.approx([0.0946899, 0.1873210, 0.0618736], abs=1e-6)
-    assert loaded["bounds"]["center"] == pytest.approx([0.0168404, 0.1101542, 0.0015369], abs=1e-6)
+    assert loaded["bounds"]["min"] == pytest.approx([-0.0946899, 0.0329874, -0.0618736], abs=1e-6)
+    assert loaded["bounds"]["max"] == pytest.approx([0.0610091, 0.1873210, 0.0587997], abs=1e-6)
+    assert loaded["bounds"]["center"] == pytest.approx(
+        [-0.0168404, 0.1101542, -0.0015369], abs=1e-6
+    )
 
 
 @pytest.mark.e2e
