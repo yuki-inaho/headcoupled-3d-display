@@ -20,7 +20,10 @@ from headcoupled_display.face_model import (
     RIGHT_IRIS_CENTRE,
     canonical_face_model,
 )
-from headcoupled_display.testing_support import allow_localhost_for_managed_chromium
+from headcoupled_display.testing_support import (
+    allow_localhost_for_managed_chromium,
+    terminate_child,
+)
 from headcoupled_display.tracking import HeadPoseEstimator
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -205,12 +208,7 @@ def test_dashboard_websocket_renderer_and_calibration(tmp_path: Path) -> None:
             assert screenshot.is_file() and screenshot.stat().st_size > 10_000
             assert not page_errors, json.dumps(page_errors, ensure_ascii=False)
     finally:
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
+        terminate_child(process)
 
 
 @pytest.mark.e2e
@@ -280,12 +278,7 @@ def test_recorded_facemesh_replay_drives_dashboard(tmp_path: Path) -> None:
             assert profile["user_profile"]["face_model_path"] == str(personal_mesh.resolve())
             browser.close()
     finally:
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
+        terminate_child(process)
 
 
 @pytest.mark.e2e
@@ -358,12 +351,7 @@ def test_browser_pcd_loader_reports_known_bunny_bounds() -> None:
             )
             browser.close()
     finally:
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
+        terminate_child(process)
 
     assert loaded["pointCount"] == 13810
     assert loaded["bounds"] is not None, f"loadAsciiPcd must return bounds, got: {loaded}"
@@ -442,8 +430,7 @@ def test_point_cloud_is_anchored_on_the_display_plane() -> None:
             scene_id = canvas.get_attribute("data-scene-id")
             browser.close()
     finally:
-        process.terminate()
-        process.wait(timeout=10)
+        terminate_child(process)
 
     assert scene_id == "bunny-on-display-plane"
     # The AABB midpoint must land exactly on the screen plane anchor (0, 0, 0).
@@ -573,12 +560,7 @@ def test_static_reference_geometry_uploads_once_regardless_of_pose_count() -> No
             browser.close()
     finally:
         if process is not None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
+            terminate_child(process)
 
     assert initial_uploads == "1", f"expected exactly one static upload batch, got {initial_uploads}"
     assert final_uploads == initial_uploads, "100 pose updates must not trigger any re-upload"
@@ -632,12 +614,7 @@ def test_dirty_scheduler_collapses_a_pose_burst_to_one_pending_frame() -> None:
             browser.close()
     finally:
         if process is not None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
+            terminate_child(process)
 
     assert pending_immediately_after_burst == "1", "at most one rAF may ever be pending"
     assert last_rendered_sequence == "100", "the renderer must converge on the latest pose"
@@ -686,12 +663,7 @@ def test_view_mode_toggle_switches_hud_and_hides_dashboard_panels() -> None:
             browser.close()
     finally:
         if process is not None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
+            terminate_child(process)
 
 
 @pytest.mark.e2e
@@ -733,9 +705,4 @@ def test_aspect_guard_reports_mismatch_against_the_physical_display() -> None:
             browser.close()
     finally:
         if process is not None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
+            terminate_child(process)
