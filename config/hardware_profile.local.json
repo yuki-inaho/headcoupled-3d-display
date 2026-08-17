@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "profile_id": "local-confirmed-camera-mount",
+  "provenance": "user_confirmed_mount_synthetic_intrinsics",
+  "display": {
+    "pixel_width": 2560,
+    "pixel_height": 1440,
+    "width_m": 0.596,
+    "height_m": 0.335
+  },
+  "camera": {
+    "image_width_px": 1280,
+    "image_height_px": 720,
+    "camera_matrix": [
+      [950.0, 0.0, 640.0],
+      [0.0, 950.0, 360.0],
+      [0.0, 0.0, 1.0]
+    ],
+    "distortion_coefficients": [-0.031, 0.014, 0.0002, -0.0003, -0.004],
+    "distortion_model": "plumb_bob",
+    "rms_reprojection_error_px": 0.24
+  },
+  "camera_mount": {
+    "horizontal_offset_m": 0.0,
+    "height_above_center_m": 0.15,
+    "forward_offset_m": 0.0,
+    "pitch_down_deg": 12.0,
+    "yaw_right_deg": 0.0,
+    "roll_clockwise_deg": 0.0
+  },
+  "quality_metrics": {
+    "camera_mount_height_and_pitch_confirmed_on_hardware": true,
+    "camera_mount_forward_offset_is_recording_placeholder": true,
+    "camera_intrinsics_are_demo_placeholder_pending_tagcal": true,
+    "display_spec_is_demo_placeholder": true,
+    "measured_hardware": false
+  },
+  "notes": [
+    "height_above_center_m=0.15 and pitch_down_deg=12.0 are the mount values the user confirmed by direct visual inspection of the physical camera and display, not synthetic demo values.",
+    "forward_offset_m=0.0 is an explicit placeholder for recorded-video validation runs, matching the display plane. If the real lens center sits in front of the display plane, measure it and replace this value.",
+    "camera (camera_matrix / distortion_coefficients) is still the same placeholder as config/hardware_profile.demo.json; replace it with the actual tagcal calibration.json intrinsics before/at recording time.",
+    "display (pixel_width/pixel_height/width_m/height_m) is also inherited from the demo profile and unconfirmed; verify the physical panel model and size before relying on absolute scale.",
+    "config/hardware_profile.demo.json (the artificial 20 cm / 10 deg demo values) is intentionally left unchanged by this profile."
+  ],
+  "created_at": "2026-08-17T00:00:00+00:00"
+}

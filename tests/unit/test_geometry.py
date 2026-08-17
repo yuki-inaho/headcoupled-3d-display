@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -11,7 +13,9 @@ from headcoupled_display.geometry import (
     mount_summary_from_camera_to_display,
     transform_point,
 )
-from headcoupled_display.models import CameraMount, DisplaySpec
+from headcoupled_display.models import CameraMount, DisplaySpec, HardwareProfile
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_mount_summary_round_trip_for_centered_downward_camera() -> None:
@@ -66,3 +70,22 @@ def test_lateral_eye_shift_changes_projection_center() -> None:
     centered = asymmetric_projection_matrix(display, np.array([0.0, 0.0, 0.65]))
     shifted = asymmetric_projection_matrix(display, np.array([0.08, 0.0, 0.65]))
     assert shifted[0, 2] != pytest.approx(centered[0, 2])
+
+
+def test_local_hardware_profile_mount_round_trips_to_confirmed_geometry() -> None:
+    """Confirmed on-hardware mount (15 cm up, 0 cm forward, 12 deg down) round-trips.
+
+    Builds ``T_S_C`` from ``config/hardware_profile.local.json``'s ``camera_mount`` and
+    recovers the mount summary from that transform, matching the profile-level check in
+    ``test_profiles.py`` but exercised at the geometry layer directly.
+    """
+
+    profile = HardwareProfile.load(ROOT / "config" / "hardware_profile.local.json")
+    transform = build_camera_to_display_matrix(profile.camera_mount)
+    summary = mount_summary_from_camera_to_display(transform)
+
+    assert summary.horizontally_centered is True
+    assert summary.height_above_center_cm == pytest.approx(15.0, abs=1e-9)
+    assert summary.forward_offset_cm == pytest.approx(0.0, abs=1e-9)
+    assert summary.pitch_down_deg == pytest.approx(12.0, abs=1e-9)
+    assert summary.total_axis_tilt_from_display_normal_deg == pytest.approx(12.0, abs=1e-9)

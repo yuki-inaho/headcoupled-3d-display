@@ -101,6 +101,10 @@ class HardwareProfile(StrictModel):
         "measured",
         "estimated_from_head_targets",
         "synthetic_demo_not_measured",
+        # Camera mount (height/pitch) confirmed by the user against the physical rig, but
+        # camera intrinsics (K, D) and display size are still demo placeholders pending a
+        # tagcal replacement. Do not claim "measured" until every field is real hardware data.
+        "user_confirmed_mount_synthetic_intrinsics",
     ]
     display: DisplaySpec
     camera: CameraIntrinsics
