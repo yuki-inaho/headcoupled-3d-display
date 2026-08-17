@@ -22,7 +22,9 @@ from headcoupled_display.face_model import (
 )
 from headcoupled_display.testing_support import (
     allow_localhost_for_managed_chromium,
+    chromium_args,
     terminate_child,
+    webgl_renderer,
 )
 from headcoupled_display.tracking import HeadPoseEstimator
 
@@ -161,13 +163,7 @@ def test_dashboard_websocket_renderer_and_calibration(tmp_path: Path) -> None:
             browser = playwright.chromium.launch(
                 headless=True,
                 executable_path=executable_path or None,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--enable-webgl",
-                    "--ignore-gpu-blocklist",
-                    "--use-angle=swiftshader",
-                ],
+                args=chromium_args(),
             )
             page = browser.new_page(viewport={"width": 1440, "height": 900}, device_scale_factor=1)
             page_errors: list[str] = []
@@ -255,7 +251,7 @@ def test_recorded_facemesh_replay_drives_dashboard(tmp_path: Path) -> None:
         with allow_localhost_for_managed_chromium(), sync_playwright() as playwright:
             browser = playwright.chromium.launch(
                 headless=True,
-                args=["--no-sandbox", "--enable-webgl", "--use-angle=swiftshader"],
+                args=chromium_args(),
             )
             page = browser.new_page(viewport={"width": 1440, "height": 900})
             page.goto(base_url, wait_until="domcontentloaded")
@@ -330,13 +326,7 @@ def test_browser_pcd_loader_reports_known_bunny_bounds() -> None:
             browser = playwright.chromium.launch(
                 headless=True,
                 executable_path=executable_path or None,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--enable-webgl",
-                    "--ignore-gpu-blocklist",
-                    "--use-angle=swiftshader",
-                ],
+                args=chromium_args(),
             )
             page = browser.new_page()
             # Navigate to the dashboard origin first so the dynamic import below and
@@ -407,13 +397,7 @@ def test_point_cloud_is_anchored_on_the_display_plane() -> None:
             browser = playwright.chromium.launch(
                 headless=True,
                 executable_path=executable_path or None,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--enable-webgl",
-                    "--ignore-gpu-blocklist",
-                    "--use-angle=swiftshader",
-                ],
+                args=chromium_args(),
             )
             page = browser.new_page()
             page.goto(base_url, wait_until="domcontentloaded")
@@ -485,13 +469,7 @@ def _launch_chromium(playwright: object):
     return playwright.chromium.launch(
         headless=True,
         executable_path=executable_path or None,
-        args=[
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--enable-webgl",
-            "--ignore-gpu-blocklist",
-            "--use-angle=swiftshader",
-        ],
+        args=chromium_args(),
     )
 
 
@@ -618,7 +596,13 @@ def test_dirty_scheduler_collapses_a_pose_burst_to_one_pending_frame() -> None:
         if process is not None:
             terminate_child(process)
 
-    assert pending_immediately_after_burst == "1", "at most one rAF may ever be pending"
+    # "At most one", not "exactly one": on a fast GPU the frame can already have
+    # fired by the time this is read, which is the scheduler working, not failing.
+    # The counter cannot exceed 1 by construction -- scheduleDraw() returns early
+    # while a handle is outstanding -- so 0 and 1 are the only reachable values.
+    assert pending_immediately_after_burst in ("0", "1"), (
+        f"at most one rAF may ever be pending, saw {pending_immediately_after_burst}"
+    )
     assert last_rendered_sequence == "100", "the renderer must converge on the latest pose"
     assert reversal_count == "0", "an ascending burst must never be recorded as reversed"
 
@@ -756,13 +740,7 @@ def test_confirmed_mount_profile_reaches_the_dashboard_readout() -> None:
             browser = playwright.chromium.launch(
                 headless=True,
                 executable_path=os.getenv("HEADCOUPLED_CHROMIUM") or None,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--enable-webgl",
-                    "--ignore-gpu-blocklist",
-                    "--use-angle=swiftshader",
-                ],
+                args=chromium_args(),
             )
             page = browser.new_page()
             page.goto(base_url, wait_until="domcontentloaded")
@@ -837,13 +815,7 @@ def test_browser_draw_latency_stays_within_a_frame() -> None:
             browser = playwright.chromium.launch(
                 headless=True,
                 executable_path=os.getenv("HEADCOUPLED_CHROMIUM") or None,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--enable-webgl",
-                    "--ignore-gpu-blocklist",
-                    "--use-angle=swiftshader",
-                ],
+                args=chromium_args(),
             )
             page = browser.new_page()
             page.goto(base_url, wait_until="domcontentloaded")
@@ -854,6 +826,7 @@ def test_browser_draw_latency_stays_within_a_frame() -> None:
                 timeout=30000,
             )
             summary = page.evaluate("() => window.headcoupledTimingSummary()")
+            renderer = webgl_renderer(page)
             browser.close()
     finally:
         terminate_child(process)
@@ -887,7 +860,8 @@ def test_browser_draw_latency_stays_within_a_frame() -> None:
                 "gpu_timing_available": summary["gpuTimingAvailable"],
                 "renderer_mode": summary["mode"],
                 "sample_count": summary["sampleCount"],
-                "environment": "headless chromium + swiftshader (not the physical display)",
+                "webgl_renderer": renderer,
+                "environment": "headless chromium (not the physical display)",
             },
             indent=2,
         )
@@ -942,13 +916,7 @@ def test_the_scene_actually_reaches_the_drawing_buffer() -> None:
             browser = playwright.chromium.launch(
                 headless=True,
                 executable_path=os.getenv("HEADCOUPLED_CHROMIUM") or None,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--enable-webgl",
-                    "--ignore-gpu-blocklist",
-                    "--use-angle=swiftshader",
-                ],
+                args=chromium_args(),
             )
             page = browser.new_page()
             page.goto(base_url, wait_until="domcontentloaded")

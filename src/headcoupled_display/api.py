@@ -366,6 +366,28 @@ def _register_ipc_input_routes(application: FastAPI, ipc_input: IpcFaceMeshInput
         return Response(status_code=204)
 
 
+def _register_clock_route(application: FastAPI) -> None:
+    @application.websocket("/ws/clock")
+    async def clock_websocket(websocket: WebSocket) -> None:
+        """Echo this server's Unix clock for each message, so a client can measure offset.
+
+        Deliberately a WebSocket rather than an HTTP endpoint. Success condition 10
+        subtracts a producer Unix timestamp from a browser one, and the bound on that
+        difference is half the round trip used to compare the two clocks. An HTTP fetch
+        from the page carries request parsing and response handling that put that bound
+        several milliseconds above the 2 ms the condition allows; an echo on an
+        already-open socket does not.
+        """
+
+        await websocket.accept()
+        try:
+            while True:
+                await websocket.receive_text()
+                await websocket.send_json({"server_unix_ns": time.time_ns()})
+        except WebSocketDisconnect:
+            return
+
+
 def _register_websocket_routes(application: FastAPI, runtime: RuntimeCoordinator) -> None:
 
     @application.websocket("/ws/pose")
@@ -436,6 +458,7 @@ def create_app(
     application.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
     _register_http_routes(application, context)
     _register_ipc_input_routes(application, context.ipc_input)
+    _register_clock_route(application)
     _register_websocket_routes(application, context.runtime)
 
     return application

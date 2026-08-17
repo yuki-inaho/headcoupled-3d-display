@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -113,3 +114,53 @@ def managed_child(
         yield process
     finally:
         terminate_child(process)
+
+
+#: Chromium flags every browser test shares.
+_CHROMIUM_BASE_ARGS = (
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--enable-webgl",
+    "--ignore-gpu-blocklist",
+)
+
+#: Ask ANGLE for the system OpenGL driver. On this machine that resolves to the real
+#: GPU; SwiftShader's software rasteriser presents roughly 1.8 frames per second for
+#: this scene, which makes every browser-side latency figure a property of the
+#: rasteriser rather than of the renderer under test.
+_CHROMIUM_HARDWARE_GL_ARGS = ("--use-gl=angle", "--use-angle=gl", "--enable-gpu")
+
+#: Software fallback for machines with no usable GPU. Correctness tests still pass here;
+#: latency figures measured under it must not be presented as hardware results.
+_CHROMIUM_SOFTWARE_GL_ARGS = ("--use-angle=swiftshader",)
+
+
+def chromium_args(*, software: bool | None = None) -> list[str]:
+    """Chromium launch flags, defaulting to hardware GL.
+
+    ``HEADCOUPLED_FORCE_SOFTWARE_GL=1`` forces the software rasteriser, for machines
+    without a usable GPU. The choice is deliberately explicit rather than silently
+    probed: a latency number measured on SwiftShader and one measured on a GPU differ by
+    more than an order of magnitude, so which was used has to be recorded, not guessed.
+    """
+
+    if software is None:
+        software = os.getenv("HEADCOUPLED_FORCE_SOFTWARE_GL") == "1"
+    tail = _CHROMIUM_SOFTWARE_GL_ARGS if software else _CHROMIUM_HARDWARE_GL_ARGS
+    return [*_CHROMIUM_BASE_ARGS, *tail]
+
+
+def webgl_renderer(page: object) -> str:
+    """Read the unmasked WebGL renderer string, so an artefact records what drew it."""
+
+    return page.evaluate(
+        """() => {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl2');
+            if (!gl) return 'no webgl2';
+            const info = gl.getExtension('WEBGL_debug_renderer_info');
+            return info
+                ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL)
+                : gl.getParameter(gl.RENDERER);
+        }"""
+    )

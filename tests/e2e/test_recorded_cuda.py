@@ -27,7 +27,9 @@ from playwright.sync_api import sync_playwright
 
 from headcoupled_display.testing_support import (
     allow_localhost_for_managed_chromium,
+    chromium_args,
     terminate_child,
+    webgl_renderer,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -157,37 +159,48 @@ def start_producer(base_url: str) -> subprocess.Popen[str]:
 
 
 def measure_clock_offset(page: object) -> dict[str, float]:
-    """Measure the browser<->server Unix clock offset the NTP way, in the browser.
+    """Measure the browser<->server Unix clock offset the NTP way, over a WebSocket.
 
     Success condition 10 subtracts a producer Unix timestamp from a browser one. Those
     are two clocks; assuming they agree is the thing this measurement exists to stop.
-    The request is bracketed by two browser readings, so the offset is known to within
-    half the round trip, and that half-round-trip is reported as the uncertainty. The
-    fastest exchange of many is kept, which is standard NTP practice: a slow exchange
-    only ever widens the bound, never narrows it, so taking the minimum is the tightest
-    honest bound rather than a relaxation of one.
+    Each exchange is bracketed by two browser readings, so the offset is known to within
+    half the round trip, and that half-round-trip is the uncertainty.
+
+    A WebSocket echo rather than an HTTP fetch: the fetch path carries request parsing
+    and response handling that put the bound several milliseconds above the 2 ms the
+    condition allows, which would reject every run for a reason that has nothing to do
+    with the latency being measured. The fastest exchange of many is kept, which is
+    standard NTP practice -- a slow exchange only ever widens the bound, so the minimum
+    is the tightest honest bound rather than a relaxation of one.
     """
 
     return page.evaluate(
-        """async () => {
+        """() => new Promise((resolve, reject) => {
+            const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/clock`;
+            const socket = new WebSocket(url);
             const samples = [];
-            for (let i = 0; i < 25; i += 1) {
-                const before = performance.timeOrigin + performance.now();
-                const payload = await (await fetch('/api/health', {cache: 'no-store'})).json();
+            let sentAt = 0;
+            const total = 40;
+            const ping = () => { sentAt = performance.timeOrigin + performance.now(); socket.send('t'); };
+            socket.addEventListener('open', ping);
+            socket.addEventListener('error', () => reject(new Error('clock socket failed')));
+            socket.addEventListener('message', (event) => {
                 const after = performance.timeOrigin + performance.now();
+                const serverMs = JSON.parse(event.data).server_unix_ns / 1e6;
                 samples.push({
-                    offsetMs: payload.server_unix_ns / 1e6 - (before + after) / 2,
-                    uncertaintyMs: (after - before) / 2,
+                    offsetMs: serverMs - (sentAt + after) / 2,
+                    uncertaintyMs: (after - sentAt) / 2,
                 });
-            }
-            samples.sort((a, b) => a.uncertaintyMs - b.uncertaintyMs);
-            const best = samples[0];
-            return {
-                offset_ms: best.offsetMs,
-                uncertainty_ms: best.uncertaintyMs,
-                samples: samples.length,
-            };
-        }"""
+                if (samples.length < total) { ping(); return; }
+                socket.close();
+                samples.sort((a, b) => a.uncertaintyMs - b.uncertaintyMs);
+                resolve({
+                    offset_ms: samples[0].offsetMs,
+                    uncertainty_ms: samples[0].uncertaintyMs,
+                    samples: samples.length,
+                });
+            });
+        })"""
     )
 
 
@@ -205,13 +218,7 @@ def test_recording_reaches_webgl_through_real_cuda_inference() -> None:
             browser = playwright.chromium.launch(
                 headless=True,
                 executable_path=os.getenv("HEADCOUPLED_CHROMIUM") or None,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--enable-webgl",
-                    "--ignore-gpu-blocklist",
-                    "--use-angle=swiftshader",
-                ],
+                args=chromium_args(),
             )
             page = browser.new_page()
             page.goto(base_url, wait_until="domcontentloaded")
@@ -226,6 +233,7 @@ def test_recording_reaches_webgl_through_real_cuda_inference() -> None:
                 timeout=60000,
             )
             clock = measure_clock_offset(page)
+            webgl = webgl_renderer(page)
             summary = page.evaluate("() => window.headcoupledTimingSummary()")
             canvas = page.locator("#gl-canvas")
             centre = json.loads(canvas.get_attribute("data-model-center-display-m"))
@@ -274,7 +282,8 @@ def test_recording_reaches_webgl_through_real_cuda_inference() -> None:
                 "clock_uncertainty_ms": clock["uncertainty_ms"],
                 "clock_domain": "unix_ns",
                 "excludes": "camera exposure and capture; this is a recording",
-                "environment": "headless chromium + swiftshader (not the physical display)",
+                "webgl_renderer": webgl,
+                "environment": "headless chromium (not the physical display)",
             },
             indent=2,
         )
