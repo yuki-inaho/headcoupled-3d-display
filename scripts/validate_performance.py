@@ -283,6 +283,16 @@ def check_browser(browser: dict[str, Any] | None) -> Check:
         and cpu_draw <= MAX_CPU_DRAW_P95_MS
         and reversals == 0
     )
+    # A pose can never be drawn sooner than the next compositor frame, so the frame
+    # interval is a hard floor under receive-to-draw. Reported with the verdict so a
+    # failure can be attributed rather than guessed at -- and so a run made on a
+    # throttled headless compositor cannot be mistaken for a run on the real display.
+    frame_interval = browser.get("frame_interval_p50_ms")
+    floor_note = (
+        ""
+        if frame_interval is None
+        else f"; measured frame interval p50 {float(frame_interval):.1f} ms is the floor"
+    )
     return Check(
         condition="成功条件9",
         name="browser_draw",
@@ -290,13 +300,15 @@ def check_browser(browser: dict[str, Any] | None) -> Check:
         detail=(
             f"receive-to-draw p95 {receive_to_draw:.3f} ms <= {MAX_RECEIVE_TO_DRAW_P95_MS}, "
             f"CPU draw p95 {cpu_draw:.3f} ms <= {MAX_CPU_DRAW_P95_MS}, "
-            f"sequence reversals {reversals} == 0"
+            f"sequence reversals {reversals} == 0{floor_note}"
         ),
         measured={
             "receive_to_draw_p95_ms": receive_to_draw,
             "cpu_draw_p95_ms": cpu_draw,
             "sequence_reversals": reversals,
+            "frame_interval_p50_ms": frame_interval,
             "gpu_timing_available": browser.get("gpu_timing_available"),
+            "environment": browser.get("environment"),
         },
     )
 

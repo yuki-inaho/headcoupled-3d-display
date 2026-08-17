@@ -238,14 +238,41 @@ SceneProfileはHardwareProfileと**必ず別ファイル**に保ちます。前�
 
 ## 9. 実行時通信
 
+### プロセス間入力（producer → server）
+
+FaceMesh推論は Python 3.10 / CUDA の別プロセスで動くため、制御とプレビューを
+**別レーン**に分けます。通信方式は候補4つを同一条件で実測して選定しました
+（`docs/performance_design.md` §5）。
+
+- **control レーン**: `POST /api/input/facemesh/control`、`application/octet-stream`、
+  `headcoupled_display.protocol` の**固定146バイト**パケット。magic、version、
+  12点(u,v) float32、score、sequence、capture/inference の monotonic ns と Unix ns。
+  毎フレーム送ります。サーバーは最新1件だけを保持し、バックログを積みません。
+- **preview レーン**: `POST /api/input/facemesh/preview`、`image/jpeg`、生バイト列。
+  producer が認識後に 640×360 へ縮小し、オーバーレイを描いてから**一度だけ**エンコードし、
+  最大10 FPSで送ります。サーバーはデコードも再エンコードもせず、そのまま `/ws/camera` へ流します。
+
+**制御の12点は 1280×720 の画像座標のままです。**プレビューを縮小しても landmark 座標も
+カメラ内部パラメータ `K` も縮小しません。プレビューと制御は別契約です。
+
+preview が来ていなくても、購読されていなくても、control 姿勢は進みます。
+
 ### `/ws/pose`
 
-JSONのlatest-value配信です。遅延を溜めないため、各クライアントは新しいsequenceだけを
-受け取ります。
+JSONのlatest-value配信です。遅延を溜めないため、各クライアントは coordinator の
+**generation** より新しいものだけを受け取ります。generation は `TrackingState.sequence`
+とは別物です。sequence は producer が作ったフレーム数であり、入力が止まっている間は
+増やせません。両方に sequence を使うと、停止通知のための番号が復帰時に衝突するか、
+停止と静止が区別できなくなります。
+
+入力が `stale_after_s`（既定0.5秒）を超えて途絶えると、最後の眼位置は保ったまま
+confidence 0.0 / `stable=false` / `diagnostics.stale=true` を配信します。高い confidence の
+古い姿勢を送り続けると、死んだ入力が「完全に静止した観察者」として描画されるためです。
 
 ### `/ws/camera`
 
-JPEGバイナリです。Base64化せず、姿勢配信と分離します。
+JPEGバイナリです。Base64化せず、姿勢配信と分離します。IPC入力ではproducerが圧縮した
+バイト列をそのまま転送します。
 
 ### FastAPI runtime
 

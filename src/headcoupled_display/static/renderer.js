@@ -616,6 +616,49 @@ export class PointCloudRenderer {
     this.timingRingIndex = (this.timingRingIndex + 1) % this.timingRing.length;
   }
 
+  /**
+   * Summarise the timing ring. Computed on demand rather than per frame: a percentile
+   * over 240 samples every frame would itself become part of what is being measured.
+   *
+   * `gpuTimingAvailable` is reported so a caller cannot present `cpuDrawP95Ms` as GPU
+   * time on hardware where `EXT_disjoint_timer_query_webgl2` is missing.
+   */
+  timingSummary() {
+    const samples = this.timingRing.filter((entry) => entry !== null);
+    const percentile = (values, fraction) => {
+      if (values.length === 0) return null;
+      const sorted = [...values].sort((a, b) => a - b);
+      const index = Math.min(sorted.length - 1, Math.floor(fraction * (sorted.length - 1)));
+      return sorted[index];
+    };
+    const cpu = samples.map((entry) => entry.cpuDrawMs);
+    const receive = samples
+      .map((entry) => entry.receiveToDrawMs)
+      .filter((value) => value !== null);
+    // Interval between consecutive draws. With a dirty scheduler every draw waits for
+    // the next requestAnimationFrame, so this is the display/compositor cadence and it
+    // is the floor under receiveToDraw: a pose can never be shown sooner than the next
+    // frame. Reported so a receiveToDraw figure can be read against the cadence that
+    // produced it instead of being blamed on the renderer.
+    const starts = samples.map((entry) => entry.drawStartMs).sort((a, b) => a - b);
+    const intervals = starts.slice(1).map((value, index) => value - starts[index]);
+    return {
+      sampleCount: samples.length,
+      receiveSampleCount: receive.length,
+      frameIntervalP50Ms: percentile(intervals, 0.5),
+      frameIntervalP95Ms: percentile(intervals, 0.95),
+      cpuDrawP50Ms: percentile(cpu, 0.5),
+      cpuDrawP95Ms: percentile(cpu, 0.95),
+      receiveToDrawP50Ms: percentile(receive, 0.5),
+      receiveToDrawP95Ms: percentile(receive, 0.95),
+      drawCount: this.drawCount,
+      sequenceReversalCount: this.sequenceReversalCount,
+      lastRenderedSequence: this.lastRenderedSequence,
+      gpuTimingAvailable: this.gpuTimingAvailable,
+      mode: this.mode,
+    };
+  }
+
   draw() {
     if (!this.running) return;
     const drawStartMs = performance.timeOrigin + performance.now();

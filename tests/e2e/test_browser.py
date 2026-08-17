@@ -791,3 +791,106 @@ def test_confirmed_mount_profile_reaches_the_dashboard_readout() -> None:
     assert readout["profile-id"] == "local-confirmed-camera-mount"
     # Not "measured": K, D and the display size are still demo placeholders.
     assert readout["profile-provenance"] == "user_confirmed_mount_synthetic_intrinsics"
+
+
+@pytest.mark.e2e
+def test_browser_draw_latency_stays_within_a_frame() -> None:
+    """Browser-side half of the latency budget: pose received -> pixels drawn.
+
+    Measured with the synthetic source because this half does not depend on where the
+    pose came from. The recognition and IPC halves are measured separately; this test
+    does not claim an end-to-end motion-to-photon figure.
+    """
+    port = free_port()
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYTHONPATH": str(ROOT / "src"),
+            "HEADCOUPLED_PROFILE": str(ROOT / "config" / "hardware_profile.local.json"),
+            "HEADCOUPLED_SCENE": str(ROOT / "config" / "scene_profile.default.json"),
+            "HEADCOUPLED_SOURCE": "synthetic",
+        }
+    )
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "headcoupled_display.api:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--log-level",
+            "warning",
+        ],
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        wait_for_server(f"{base_url}/api/health", process)
+        with allow_localhost_for_managed_chromium(), sync_playwright() as playwright:
+            browser = playwright.chromium.launch(
+                headless=True,
+                executable_path=os.getenv("HEADCOUPLED_CHROMIUM") or None,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--enable-webgl",
+                    "--ignore-gpu-blocklist",
+                    "--use-angle=swiftshader",
+                ],
+            )
+            page = browser.new_page()
+            page.goto(base_url, wait_until="domcontentloaded")
+            page.wait_for_function("() => document.body.dataset.ready === 'true'", timeout=20000)
+            # Wait for a real sample population rather than a fixed sleep.
+            page.wait_for_function(
+                "() => (window.headcoupledTimingSummary()?.receiveSampleCount ?? 0) >= 30",
+                timeout=30000,
+            )
+            summary = page.evaluate("() => window.headcoupledTimingSummary()")
+            browser.close()
+    finally:
+        terminate_child(process)
+
+    assert summary["mode"] == "WebGL2"
+    assert summary["receiveSampleCount"] >= 30
+    assert summary["sequenceReversalCount"] == 0
+    # Never call CPU time "GPU time": this records whether GPU timing was even available.
+    assert summary["gpuTimingAvailable"] in (True, False)
+
+    # 成功条件9 has two halves. CPU draw time is a property of this renderer and is
+    # asserted here. receive-to-draw is bounded from below by the compositor cadence,
+    # which under headless SwiftShader is not the cadence of the real display, so it is
+    # written out for scripts/validate_performance.py to judge against a run that was
+    # made on the actual hardware -- rather than being asserted in a way that would
+    # either fail on every CI machine or be quietly relaxed until it passed.
+    assert summary["cpuDrawP95Ms"] <= 4.0, summary
+
+    ARTIFACTS.mkdir(parents=True, exist_ok=True)
+    (ARTIFACTS / "perf").mkdir(parents=True, exist_ok=True)
+    (ARTIFACTS / "perf" / "browser_timing.json").write_text(
+        json.dumps(
+            {
+                "receive_to_draw_p50_ms": summary["receiveToDrawP50Ms"],
+                "receive_to_draw_p95_ms": summary["receiveToDrawP95Ms"],
+                "cpu_draw_p50_ms": summary["cpuDrawP50Ms"],
+                "cpu_draw_p95_ms": summary["cpuDrawP95Ms"],
+                "frame_interval_p50_ms": summary["frameIntervalP50Ms"],
+                "frame_interval_p95_ms": summary["frameIntervalP95Ms"],
+                "sequence_reversals": summary["sequenceReversalCount"],
+                "gpu_timing_available": summary["gpuTimingAvailable"],
+                "renderer_mode": summary["mode"],
+                "sample_count": summary["sampleCount"],
+                "environment": "headless chromium + swiftshader (not the physical display)",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )

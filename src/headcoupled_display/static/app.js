@@ -52,6 +52,10 @@ async function loadProfile() {
   // Not used by any production code path.
   window.__headcoupledRenderer = renderer;
   const info = await renderer.load(scene.point_cloud_asset);
+  // Diagnostics hook. The renderer is module-scoped, and end-to-end tests need the
+  // browser-side draw latency it measures; exposing a read-only summary function is
+  // cheaper and less fragile than mirroring every percentile into a data attribute.
+  window.headcoupledTimingSummary = () => renderer?.timingSummary() ?? null;
   setText("renderer-status", `${info.mode} / ${info.pointCount.toLocaleString()} points`);
   updateSceneVerificationHud(scene);
 }

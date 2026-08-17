@@ -105,3 +105,33 @@ refresh=1 へ戻して精度を守り、性能未達を記録する。閾値を�
 | preview_resize_encode | 289 | 3.048 | 4.397 | 6.104 |
 
 **判定:** PASS — CUDA providerが実行中で、全段のp50/p95/p99が採取・検証された（このステップはベースライン記録であり、閾値ゲートは後続手順で行う）。
+
+### 手順19-21 / 成功条件9: ブラウザー側の描画遅延 — 2026-08-17
+
+- **コマンド:** `PYTHONPATH=src .venv/bin/python -m pytest -m e2e tests/e2e -q -k draw_latency`
+- **入力:** synthetic source（この半分は姿勢の出所に依存しないため）
+- **環境:** headless Chromium + SwiftShader。**物理ディスプレイではない。**
+- **raw:** `artifacts/perf/browser_timing.json`
+
+| 指標 | 実測 | 閾値 | 判定 |
+| :--- | ---: | ---: | :--- |
+| CPU 描画 p50 | 0.100 ms | — | — |
+| **CPU 描画 p95** | **0.400 ms** | ≤ 4 ms | **PASS** |
+| receive→draw p50 | 23.900 ms | — | — |
+| **receive→draw p95** | **40.500 ms** | ≤ 16.7 ms | **FAIL** |
+| sequence 逆転 | 0 | 0 | PASS |
+| GPU timer query | 利用可 | — | — |
+| **描画間隔 p50** | **342.900 ms** | — | — |
+
+**判定: 部分的 FAIL。** CPU 描画時間はレンダラー自身の性質であり、閾値 4 ms に対して
+0.400 ms と一桁以上の余裕がある。一方 receive→draw は**コンポジタの周期が下限**になる。
+姿勢は「次のフレーム」より早くは表示できない。この環境で計測した描画間隔 p50 は
+**342.9 ms（約3 fps）** であり、headless Chromium が requestAnimationFrame を絞っている
+ことを示す。つまり receive→draw 40.5 ms はレンダラーの遅さではなく、この環境の
+コンポジタ周期に律速された値である。
+
+閾値は緩めない。**成功条件9 は未達のまま残す。**正しい判定には物理ディスプレイ上での
+再計測が必要であり、それは実カメラ受け入れと同じく本作業の非ゴールである。
+E2E テストは CPU 描画時間だけを assert し、receive→draw は
+`scripts/validate_performance.py` が判定できるよう JSON に書き出す。こうすることで、
+CI 機で必ず落ちるテストにも、通るまで閾値を緩めた判定にもならない。
