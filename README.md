@@ -6,19 +6,36 @@
 
 ## 重要な前提
 
-添付資料には、実測済みの「ディスプレイ中央からカメラまでの高さ」または
-「ディスプレイ法線からの下向き角」を含む外部較正結果は入っていませんでした。
-`config/hardware_profile.demo.json` の値は、動作確認専用の人工値です。
+同梱プロファイルは2つあり、**出自が違います**。
 
-- カメラ左右位置: 中央（0.0 cm）
-- ディスプレイ中央から上: **20.0 cm**
-- ディスプレイ面より手前: **2.5 cm**
-- ディスプレイ法線から下向き: **10.0°**
-- 出自: `synthetic_demo_not_measured`
+| ファイル | 出自 | 水平 | 上 | 前後 | 下向き |
+| :--- | :--- | ---: | ---: | ---: | ---: |
+| `config/hardware_profile.demo.json` | `synthetic_demo_not_measured` | 0.0 cm | 20.0 cm | 2.5 cm | 10.0° |
+| `config/hardware_profile.local.json` | `user_confirmed_mount_synthetic_intrinsics` | 0.0 cm | **15.0 cm** | 0.0 cm | **12.0°** |
 
-物理機器で使用する前に、実測値または頭部ターゲット較正結果へ置き換えてください。
+demo は動作確認専用の人工値です。local はこの機体でユーザーが確認した設置値ですが、
+**まだ `measured` ではありません** — カメラ内部パラメータ `K, D` と表示サイズが demo の
+プレースホルダのままだからです。全項目が実測になるまで `measured` を名乗らせません。
+`forward_offset_m = 0.0` は録画検証用の明示値であり、実レンズ中心が画面より手前なら
+実カメラ受け入れ前に定規で実測して更新してください。
+
+物理機器で使用する前に、外部姿勢を実測値または頭部ターゲット較正結果へ置き換えてください。
 `headcoupled profile-summary` は、設定値ではなく最終的な4×4変換行列から上記の値を
 逆算して表示します。
+
+### シーンプロファイル
+
+「何をどこに描くか」は `config/scene_profile.default.json` に分離されています。
+較正結果ではなく表示上の選択なので、ハードウェアプロファイルとは別ファイルです。
+
+- 点群のAABB中心を画面座標の原点 `(0, 0, 0)`（＝表示エリア中心の画面表面）に置く
+- 最長辺が **0.24 m** になるよう等方スケール
+- グリッド間隔 0.05 m、後壁 `z = -0.30 m`、床 `y = -0.14 m`
+
+レンダラーは配置定数を持ちません。読み込み時に点群のAABBを求めて
+`T(anchor) · S · T(-aabb_center)` を一度だけ組み立てます。この設定では点群が
+`z ∈ [-0.072, +0.072] m` となり**画面面を貫通**するため、同じ被写体の前面（頭と逆に動く）と
+背面（頭に追従する）で逆向きの視差が同時に観察できます。
 
 ## 構成
 
@@ -34,7 +51,9 @@ camera / recorded FaceMesh source / synthetic source
         └── TrackingState（画面座標系）
                 ├── /ws/pose      JSON
                 ├── /ws/camera    JPEG binary
-                └── off-axis projection → WebGL2 / Canvas2D → bunny.pcd
+                └── off-axis projection → WebGL2 / Canvas2D
+                        ├── SceneProfile → T(anchor)·S·T(-aabb_center) → bunny.pcd
+                        └── 画面面基準 z=0 / 後壁 z=-0.30 m / 床 y=-0.14 m
 
 AprilTag tagcal
         └── camera intrinsics K, D
@@ -42,6 +61,10 @@ AprilTag tagcal
 5点/9点 head-ray calibration
         └── camera ↔ display external transform
 ```
+
+プロファイルは3つに分かれています。**カメラを動かしたら** HardwareProfile、
+**利用者が変わったら** UserProfile、**表示内容を変えたら** SceneProfile だけを差し替えます。
+同じファイルに混ぜると、被写体を変えただけの差分と実測値を変えた差分が区別できなくなります。
 
 ブラウザー側に顔推論を入れず、Python側は姿勢JSONとJPEGを別WebSocketで配信します。
 表示側は外部依存のないES Modules実装で、WebGL2を優先し、管理対象ブラウザー等で
@@ -79,6 +102,20 @@ PYTHONPATH=src .venv/bin/python -m headcoupled_display.cli serve \
 
 ブラウザーで `http://127.0.0.1:8000` を開きます。
 
+## 実行経路と、それぞれが保証すること
+
+4つの経路は**保証範囲が違います**。混同しないでください。
+
+| 経路 | 入力 | 顔推論 | 保証すること | 保証しないこと |
+| :--- | :--- | :--- | :--- | :--- |
+| **synthetic** | 決定的な合成頭部レイ | なし | API・投影幾何・レンダラーの単体回帰 | 実顔・実性能・実遅延の一切 |
+| **replay**（保存済みlandmarks） | 録画 + 保存済みJSON | なし（再生） | 実顔ランドマークからの幾何・眼位置・表示の再現性 | 認識時間、CUDA、motion-to-photon |
+| **recorded + CUDA** | 録画 → 実FaceMesh推論 | あり（CUDA） | 認識込みの段階別遅延、精度、IPC、描画までの経路 | カメラ露光・キャプチャを含む実 motion-to-photon |
+| **live camera** | `/dev/video0` | あり（CUDA） | 実運用そのもの | （受け入れ試験は別途必要） |
+
+**合成入力は単体回帰には使えますが、実入力の受け入れ結果の代用にはしません。**
+性能値・精度値を引用するときは、必ずどの経路の測定かを併記してください。
+
 ### 主なタスク
 
 ```bash
@@ -90,6 +127,14 @@ just playwright-cli
 just complexity             # radon: C以上の複雑度と保守性指数
 just benchmark-tracking     # キャッシュ済みSQPNPのCPUマイクロベンチマーク
 just check
+```
+
+性能計測は2段構成です。認識側は Python 3.10 / CUDA の別環境で動くため、
+生サンプルの採取と、スキーマ検証つき集計を分けています。
+
+```bash
+just benchmark-recorded      # 3.10側: test10.avi の段階別レイテンシ生サンプルを採取
+just summarize-performance   # 3.13側: スキーマ検証して artifacts/ と docs/performance_results.md へ
 ```
 
 `just` がない場合:
@@ -228,16 +273,21 @@ OpenAPIは `/docs` で確認できます。
 
 ## テスト
 
-実施済み試験:
+```bash
+just test        # Python 単体・API（e2e を除く）
+just test-e2e    # Playwright ブラウザー E2E
+just check       # ruff + radon + pytest 全体
+```
 
-- Python単体・API: 10件
-- Playwright Python E2E: 1件
-- Playwright CLIスクリーンショット: 1件
-- 合成較正: 36標本、9画面点
-- 代表結果: 高さ誤差0.09 mm、ピッチ誤差0.19°、平均レイ残差1.81 mm
+**合成較正**（36標本、9画面点、決定的乱数シード `20260817`）の代表結果は
+高さ誤差 0.09 mm、ピッチ誤差 0.19°、平均レイ残差 1.81 mm です。これは
+**人工データに対する結果であり、実機精度を意味しません**。上の「実行経路」表の
+synthetic 行に相当します。
 
-スクリーンショットは `artifacts/` に保存されます。数値は決定的乱数シード
-`20260817` の人工データに対する結果であり、実機精度を意味しません。
+スクリーンショットと生の計測結果は `artifacts/` に保存されます。`artifacts/` は
+`.gitignore` 対象で、再実行すれば再生成されます。追跡対象の実測要約は
+`docs/performance_results.md` にあり、raw の SHA-256・実行コマンド・commit・
+主要 percentile・pass/fail 判定を記録しています。
 
 ## プライバシー
 
