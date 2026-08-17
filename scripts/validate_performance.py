@@ -156,6 +156,7 @@ def check_accuracy(accuracy: dict[str, Any] | None) -> Check:
     eye_p95 = float(accuracy.get("eye_position_p95_mm", float("inf")))
     angle_p95 = float(accuracy.get("angle_p95_deg", float("inf")))
     ok = eye_p95 <= MAX_EYE_POSITION_P95_MM and angle_p95 <= MAX_ANGLE_P95_DEG
+    note = accuracy.get("note")
     return Check(
         condition="成功条件5",
         name="accuracy_vs_full_detect",
@@ -163,8 +164,16 @@ def check_accuracy(accuracy: dict[str, Any] | None) -> Check:
         detail=(
             f"eye p95 {eye_p95:.3f} mm <= {MAX_EYE_POSITION_P95_MM}, "
             f"angle p95 {angle_p95:.3f} deg <= {MAX_ANGLE_P95_DEG}"
+            + (f" -- {note}" if note else "")
         ),
-        measured={"eye_position_p95_mm": eye_p95, "angle_p95_deg": angle_p95},
+        measured={
+            "eye_position_p95_mm": eye_p95,
+            "angle_p95_deg": angle_p95,
+            "shipping_detector_refresh_interval": accuracy.get(
+                "shipping_detector_refresh_interval"
+            ),
+            "note": note,
+        },
     )
 
 
