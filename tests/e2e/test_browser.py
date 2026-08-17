@@ -9,6 +9,7 @@ import time
 import urllib.request
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 from playwright.sync_api import sync_playwright
@@ -20,6 +21,7 @@ from headcoupled_display.face_model import (
     canonical_face_model,
 )
 from headcoupled_display.testing_support import allow_localhost_for_managed_chromium
+from headcoupled_display.tracking import HeadPoseEstimator
 
 ROOT = Path(__file__).resolve().parents[2]
 ARTIFACTS = ROOT / "artifacts"
@@ -61,6 +63,50 @@ def write_valid_personal_pcd(path: Path) -> None:
         + "".join(f"{x:.6f} {y:.6f} {z:.6f}\n" for x, y, z in points_opencv_mm),
         encoding="ascii",
     )
+
+
+def write_replay_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Create a short video and the exact JSON schema emitted by FaceMesh."""
+
+    camera_matrix = np.array(
+        [[950.0, 0.0, 640.0], [0.0, 950.0, 360.0], [0.0, 0.0, 1.0]], dtype=np.float64
+    )
+    indices = HeadPoseEstimator.LANDMARK_INDICES
+    points = canonical_face_model().pnp_points_opencv_m[indices]
+    records: list[dict[str, object]] = []
+    video_path = tmp_path / "recording.avi"
+    writer = cv2.VideoWriter(str(video_path), cv2.VideoWriter_fourcc(*"MJPG"), 30.0, (1280, 720))
+    assert writer.isOpened()
+    for frame_index, x_offset_m in enumerate((-0.015, 0.0, 0.015)):
+        projected, _ = cv2.projectPoints(
+            points,
+            np.array([[0.03], [0.0], [0.0]], dtype=np.float64),
+            np.array([[x_offset_m], [0.0], [0.65]], dtype=np.float64),
+            camera_matrix,
+            None,
+        )
+        landmarks = np.zeros((478, 3), dtype=np.float64)
+        landmarks[indices, :2] = projected.reshape(-1, 2)
+        records.append(
+            {"frame": frame_index, "faces": [{"score": 0.99, "landmarks": landmarks.tolist()}]}
+        )
+        writer.write(np.full((720, 1280, 3), 32 + frame_index * 32, dtype=np.uint8))
+    writer.release()
+    landmarks_path = tmp_path / "recording.landmarks.json"
+    landmarks_path.write_text(json.dumps(records), encoding="utf-8")
+    intrinsics_path = tmp_path / "calibration.json"
+    intrinsics_path.write_text(
+        json.dumps(
+            {
+                "image_width": 1280,
+                "image_height": 720,
+                "camera_matrix": camera_matrix.tolist(),
+                "distortion_coefficients": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return landmarks_path, video_path, intrinsics_path
 
 
 @pytest.mark.e2e
@@ -135,7 +181,11 @@ def test_dashboard_websocket_renderer_and_calibration(tmp_path: Path) -> None:
             assert "20.0 cm" in page.locator("#mount-height").inner_text()
             assert "10.0°" in page.locator("#mount-pitch").inner_text()
             assert "13,810 points" in page.locator("#renderer-status").inner_text()
-            assert page.locator("#camera-preview").get_attribute("src", timeout=10_000).startswith("blob:")
+            assert (
+                page.locator("#camera-preview")
+                .get_attribute("src", timeout=10_000)
+                .startswith("blob:")
+            )
             with urllib.request.urlopen(f"{base_url}/api/profile") as response:
                 profile = json.loads(response.read())
             assert profile["user_profile"]["face_model_path"] == str(personal_mesh.resolve())
@@ -154,6 +204,81 @@ def test_dashboard_websocket_renderer_and_calibration(tmp_path: Path) -> None:
             browser.close()
             assert screenshot.is_file() and screenshot.stat().st_size > 10_000
             assert not page_errors, json.dumps(page_errors, ensure_ascii=False)
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+
+@pytest.mark.e2e
+def test_recorded_facemesh_replay_drives_dashboard(tmp_path: Path) -> None:
+    port = free_port()
+    personal_mesh = tmp_path / "shape.pcd"
+    write_valid_personal_pcd(personal_mesh)
+    landmarks, recording, intrinsics = write_replay_fixture(tmp_path)
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(ROOT / "src")
+    command = [
+        sys.executable,
+        "-m",
+        "headcoupled_display.cli",
+        "serve",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--profile",
+        str(ROOT / "config" / "hardware_profile.demo.json"),
+        "--source",
+        "replay",
+        "--replay-landmarks",
+        str(landmarks),
+        "--replay-video",
+        str(recording),
+        "--face-model",
+        str(personal_mesh),
+        "--intrinsics",
+        str(intrinsics),
+    ]
+    process = subprocess.Popen(
+        command,
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        wait_for_server(f"{base_url}/api/health", process)
+        with allow_localhost_for_managed_chromium(), sync_playwright() as playwright:
+            browser = playwright.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--enable-webgl", "--use-angle=swiftshader"],
+            )
+            page = browser.new_page(viewport={"width": 1440, "height": 900})
+            page.goto(base_url, wait_until="domcontentloaded")
+            page.wait_for_function("document.body.dataset.ready === 'true'", timeout=15_000)
+            page.wait_for_function(
+                "Number(document.querySelector('#pose-sequence').dataset.sequence) >= 2",
+                timeout=15_000,
+            )
+            assert "録画再生" in page.locator("#tracking-status").inner_text()
+            assert (
+                page.locator("#camera-preview")
+                .get_attribute("src", timeout=10_000)
+                .startswith("blob:")
+            )
+            with urllib.request.urlopen(f"{base_url}/api/profile") as response:
+                profile = json.loads(response.read())
+            assert (
+                profile["hardware_profile"]["quality_metrics"]["camera_intrinsics_imported"] is True
+            )
+            assert profile["user_profile"]["face_model_path"] == str(personal_mesh.resolve())
+            browser.close()
     finally:
         process.terminate()
         try:
