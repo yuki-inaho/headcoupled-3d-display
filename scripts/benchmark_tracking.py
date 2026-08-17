@@ -62,7 +62,9 @@ def main() -> None:
         estimator.estimate(landmarks)
     elapsed_ns = time.perf_counter_ns() - started
     per_estimate_us = elapsed_ns / arguments.iterations / 1_000.0
-    print(f"SQPNP cached pose: {per_estimate_us:.2f} us/estimate ({arguments.iterations} iterations)")
+    print(
+        f"SQPNP cached pose: {per_estimate_us:.2f} us/estimate ({arguments.iterations} iterations)"
+    )
 
 
 if __name__ == "__main__":

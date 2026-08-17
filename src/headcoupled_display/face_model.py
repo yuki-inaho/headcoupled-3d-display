@@ -139,9 +139,7 @@ def _kabsch_report(source: np.ndarray, target: np.ndarray) -> tuple[float, float
         vt[-1] *= -1.0
         rotation = vt.T @ u.T
     residual = (source - source_center) @ rotation.T + target_center - target
-    angle_deg = float(
-        np.degrees(np.arccos(np.clip((np.trace(rotation) - 1.0) / 2.0, -1.0, 1.0)))
-    )
+    angle_deg = float(np.degrees(np.arccos(np.clip((np.trace(rotation) - 1.0) / 2.0, -1.0, 1.0))))
     return float(np.linalg.det(rotation)), angle_deg, float(np.sqrt(np.mean(residual**2)))
 
 

@@ -93,7 +93,10 @@ def perturbed_mount_prior(profile: HardwareProfile) -> HardwareProfile:
             "profile_id": f"{profile.profile_id}-perturbed-prior",
             "camera_mount": perturbed,
             "camera_to_display_matrix": None,
-            "notes": (*profile.notes, "Synthetic calibration starts from a deliberately perturbed prior."),
+            "notes": (
+                *profile.notes,
+                "Synthetic calibration starts from a deliberately perturbed prior.",
+            ),
         }
     )
 

@@ -157,9 +157,7 @@ def _judge(candidate: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _evaluate_candidates(
-    raw: dict[str, Any], estimator: HeadPoseEstimator
-) -> list[dict[str, Any]]:
+def _evaluate_candidates(raw: dict[str, Any], estimator: HeadPoseEstimator) -> list[dict[str, Any]]:
     indices = raw["exported_landmark_indices"]
     by_interval = {int(entry["interval"]): entry for entry in raw["candidates"]}
     if REFERENCE_INTERVAL not in by_interval:
@@ -172,9 +170,7 @@ def _evaluate_candidates(
     for interval in sorted(by_interval):
         entry = by_interval[interval]
         poses = (
-            reference_poses
-            if interval == REFERENCE_INTERVAL
-            else _poses(estimator, entry, indices)
+            reference_poses if interval == REFERENCE_INTERVAL else _poses(estimator, entry, indices)
         )
         result = {
             "interval": interval,

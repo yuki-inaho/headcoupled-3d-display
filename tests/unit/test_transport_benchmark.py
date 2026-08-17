@@ -78,7 +78,9 @@ def _run(**overrides: object) -> bench.TransportRunResult:
     return bench.TransportRunResult(**_run_kwargs(**overrides))
 
 
-def _passing_candidate_report(candidate: bench.CandidateName, run_count: int = 5) -> bench.TransportCandidateReport:
+def _passing_candidate_report(
+    candidate: bench.CandidateName, run_count: int = 5
+) -> bench.TransportCandidateReport:
     runs = tuple(_run(candidate=candidate, run_index=i) for i in range(run_count))
     return bench.TransportCandidateReport(candidate=candidate, dependency_available=True, runs=runs)
 
@@ -252,7 +254,9 @@ def test_report_rejects_missing_candidate() -> None:
 def test_run_recorded_under_a_different_candidate_name_is_rejected() -> None:
     mismatched_run = _run(candidate="grpc")  # wrong name for a "zeromq" candidate report
     with pytest.raises(ValidationError, match="different candidate name"):
-        bench.TransportCandidateReport(candidate="zeromq", dependency_available=True, runs=(mismatched_run,))
+        bench.TransportCandidateReport(
+            candidate="zeromq", dependency_available=True, runs=(mismatched_run,)
+        )
 
 
 # --- dependency-missing must be an explicit failure, never a silent skip ---
@@ -311,7 +315,9 @@ def test_evaluate_candidate_fails_when_stale_frames_are_not_recovered() -> None:
     )
     verdict = bench.evaluate_candidate(report)
     assert verdict.passed is False
-    recovery = next(c for c in verdict.criteria if c.name == "recovers_within_2_frames_after_overload")
+    recovery = next(
+        c for c in verdict.criteria if c.name == "recovers_within_2_frames_after_overload"
+    )
     assert recovery.passed is False
 
 
@@ -325,7 +331,9 @@ def test_evaluate_candidate_passes_recovery_within_two_frames() -> None:
         }
     )
     verdict = bench.evaluate_candidate(report)
-    recovery = next(c for c in verdict.criteria if c.name == "recovers_within_2_frames_after_overload")
+    recovery = next(
+        c for c in verdict.criteria if c.name == "recovers_within_2_frames_after_overload"
+    )
     assert recovery.passed is True
 
 
@@ -341,7 +349,9 @@ def test_evaluate_candidate_fails_when_a_single_stale_frame_settles_the_recovery
     report = report.model_copy(update={"runs": tuple(runs)})
     verdict = bench.evaluate_candidate(report)
     assert verdict.passed is False
-    recovery = next(c for c in verdict.criteria if c.name == "recovers_within_2_frames_after_overload")
+    recovery = next(
+        c for c in verdict.criteria if c.name == "recovers_within_2_frames_after_overload"
+    )
     assert recovery.passed is False
 
 
@@ -390,19 +400,25 @@ def test_evaluate_candidate_all_criteria_pass_for_a_clean_report() -> None:
 # --- adoption must never be decided by the mean alone -----------------------
 
 
-def test_evaluate_candidate_fails_when_a_single_run_violates_p95_even_though_the_mean_passes() -> None:
+def test_evaluate_candidate_fails_when_a_single_run_violates_p95_even_though_the_mean_passes() -> (
+    None
+):
     """4 runs at 1.0ms p95 and 1 run at 2.5ms p95 average to 1.3ms (<= 2ms) -- but the
     worst run alone must sink the candidate; the mean must never be what is judged."""
 
     good_kwargs = {"control_latency_p95_ms": 1.0, "control_latency_p99_ms": 1.2}
     runs = [_run(candidate="zeromq", run_index=i, **good_kwargs) for i in range(4)]
     runs.append(
-        _run(candidate="zeromq", run_index=4, control_latency_p95_ms=2.5, control_latency_p99_ms=3.0)
+        _run(
+            candidate="zeromq", run_index=4, control_latency_p95_ms=2.5, control_latency_p99_ms=3.0
+        )
     )
     mean_p95 = sum(r.control_latency_p95_ms for r in runs) / len(runs)
     assert mean_p95 <= bench.CONTROL_P95_THRESHOLD_MS, "test setup must keep the mean passing"
 
-    report = bench.TransportCandidateReport(candidate="zeromq", dependency_available=True, runs=tuple(runs))
+    report = bench.TransportCandidateReport(
+        candidate="zeromq", dependency_available=True, runs=tuple(runs)
+    )
     verdict = bench.evaluate_candidate(report)
     assert verdict.passed is False
 
@@ -418,7 +434,9 @@ def test_evaluate_report_selects_the_single_passing_candidate() -> None:
     )
     reports["json_http"] = reports["json_http"].model_copy(update={"runs": slow_runs})
     for name in ("binary_http", "zeromq"):
-        blocked_runs = tuple(run.model_copy(update={"producer_blocked": True}) for run in reports[name].runs)
+        blocked_runs = tuple(
+            run.model_copy(update={"producer_blocked": True}) for run in reports[name].runs
+        )
         reports[name] = reports[name].model_copy(update={"runs": blocked_runs})
 
     verdict = bench.evaluate_report(_full_report(reports))
@@ -437,7 +455,10 @@ def test_evaluate_report_does_not_implicitly_adopt_the_least_bad_candidate_when_
     verdict = bench.evaluate_report(_full_report(reports))
     assert verdict.selected_candidate is None
     assert all(not v.passed for v in verdict.verdicts)
-    assert "least-bad" in verdict.summary or "no candidate met every adoption criterion" in verdict.summary
+    assert (
+        "least-bad" in verdict.summary
+        or "no candidate met every adoption criterion" in verdict.summary
+    )
 
 
 def test_evaluate_report_does_not_auto_select_when_multiple_candidates_pass() -> None:
@@ -454,10 +475,14 @@ def test_compute_recovery_frames_is_zero_for_steady_state_arrivals() -> None:
     control_rate_hz = 60.0
     gap_ns = int(1e9 / control_rate_hz)
     control = [
-        bench._ReceivedControl(sequence=i, receive_monotonic_ns=i * gap_ns, send_monotonic_ns=i * gap_ns)
+        bench._ReceivedControl(
+            sequence=i, receive_monotonic_ns=i * gap_ns, send_monotonic_ns=i * gap_ns
+        )
         for i in range(10)
     ]
-    frames = bench._compute_recovery_frames(control, stall_sequence=5, control_rate_hz=control_rate_hz)
+    frames = bench._compute_recovery_frames(
+        control, stall_sequence=5, control_rate_hz=control_rate_hz
+    )
     assert frames <= 1
 
 
@@ -469,7 +494,9 @@ def test_compute_recovery_frames_counts_a_backlog_drain_burst() -> None:
     control_rate_hz = 60.0
     gap_ns = int(1e9 / control_rate_hz)
     control = [
-        bench._ReceivedControl(sequence=i, receive_monotonic_ns=i * gap_ns, send_monotonic_ns=i * gap_ns)
+        bench._ReceivedControl(
+            sequence=i, receive_monotonic_ns=i * gap_ns, send_monotonic_ns=i * gap_ns
+        )
         for i in range(5)
     ]
     # Stall starts at sequence 5; six backlogged messages (5..10) arrive ~0ns apart
@@ -478,15 +505,21 @@ def test_compute_recovery_frames_counts_a_backlog_drain_burst() -> None:
     for offset, sequence in enumerate(range(5, 11)):
         control.append(
             bench._ReceivedControl(
-                sequence=sequence, receive_monotonic_ns=burst_start_ns + offset * 1000, send_monotonic_ns=sequence * gap_ns
+                sequence=sequence,
+                receive_monotonic_ns=burst_start_ns + offset * 1000,
+                send_monotonic_ns=sequence * gap_ns,
             )
         )
     control.append(
         bench._ReceivedControl(
-            sequence=11, receive_monotonic_ns=burst_start_ns + 6000 + gap_ns, send_monotonic_ns=11 * gap_ns
+            sequence=11,
+            receive_monotonic_ns=burst_start_ns + 6000 + gap_ns,
+            send_monotonic_ns=11 * gap_ns,
         )
     )
-    frames = bench._compute_recovery_frames(control, stall_sequence=5, control_rate_hz=control_rate_hz)
+    frames = bench._compute_recovery_frames(
+        control, stall_sequence=5, control_rate_hz=control_rate_hz
+    )
     assert frames >= 5
 
 
@@ -494,7 +527,9 @@ def test_compute_sequence_regressions_counts_out_of_order_arrivals() -> None:
     control = [
         bench._ReceivedControl(sequence=0, receive_monotonic_ns=0, send_monotonic_ns=0),
         bench._ReceivedControl(sequence=5, receive_monotonic_ns=1, send_monotonic_ns=1),
-        bench._ReceivedControl(sequence=3, receive_monotonic_ns=2, send_monotonic_ns=2),  # regression
+        bench._ReceivedControl(
+            sequence=3, receive_monotonic_ns=2, send_monotonic_ns=2
+        ),  # regression
         bench._ReceivedControl(sequence=6, receive_monotonic_ns=3, send_monotonic_ns=3),
     ]
     assert bench._compute_sequence_regressions(control) == 1

@@ -97,9 +97,7 @@ class ControlPacket:
 
     def __post_init__(self) -> None:
         if len(self.landmarks_px) != NUM_LANDMARKS:
-            raise ProtocolError(
-                f"expected {NUM_LANDMARKS} landmarks, got {len(self.landmarks_px)}"
-            )
+            raise ProtocolError(f"expected {NUM_LANDMARKS} landmarks, got {len(self.landmarks_px)}")
         coordinates = [value for pair in self.landmarks_px for value in pair]
         if not all(math.isfinite(value) for value in (*coordinates, self.score)):
             raise ProtocolError("landmark coordinates and score must be finite (no NaN/Inf)")

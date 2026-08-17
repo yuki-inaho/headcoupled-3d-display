@@ -185,12 +185,23 @@ class TransportRunResult(StrictModel):
     @model_validator(mode="after")
     def validate_consistency(self) -> TransportRunResult:
         if self.producer_finished_monotonic_ns < self.producer_started_monotonic_ns:
-            raise ValueError("producer_finished_monotonic_ns precedes producer_started_monotonic_ns")
+            raise ValueError(
+                "producer_finished_monotonic_ns precedes producer_started_monotonic_ns"
+            )
         if self.consumer_finished_monotonic_ns < self.consumer_started_monotonic_ns:
-            raise ValueError("consumer_finished_monotonic_ns precedes consumer_started_monotonic_ns")
-        if self.received_control_count > 0 and self.max_received_sequence < self.min_received_sequence:
+            raise ValueError(
+                "consumer_finished_monotonic_ns precedes consumer_started_monotonic_ns"
+            )
+        if (
+            self.received_control_count > 0
+            and self.max_received_sequence < self.min_received_sequence
+        ):
             raise ValueError("max_received_sequence must not be less than min_received_sequence")
-        if not (self.control_latency_p50_ms <= self.control_latency_p95_ms <= self.control_latency_p99_ms):
+        if not (
+            self.control_latency_p50_ms
+            <= self.control_latency_p95_ms
+            <= self.control_latency_p99_ms
+        ):
             raise ValueError("control latency percentiles must satisfy p50 <= p95 <= p99")
         return self
 
@@ -214,7 +225,9 @@ class TransportCandidateReport(StrictModel):
             if self.failure_reason is not None:
                 raise ValueError(f"{self.candidate}: failure_reason must be null when available")
             if any(run.candidate != self.candidate for run in self.runs):
-                raise ValueError(f"{self.candidate}: a run is recorded under a different candidate name")
+                raise ValueError(
+                    f"{self.candidate}: a run is recorded under a different candidate name"
+                )
         else:
             if self.runs:
                 raise ValueError(f"{self.candidate}: dependency_available=False must carry no runs")
@@ -238,7 +251,9 @@ class TransportComparisonReport(StrictModel):
     def validate_candidates(self) -> TransportComparisonReport:
         names = [c.candidate for c in self.candidates]
         if len(names) != len(REQUIRED_CANDIDATES) or set(names) != set(REQUIRED_CANDIDATES):
-            raise ValueError(f"candidates must be exactly {REQUIRED_CANDIDATES}, got {tuple(names)}")
+            raise ValueError(
+                f"candidates must be exactly {REQUIRED_CANDIDATES}, got {tuple(names)}"
+            )
         for candidate_report in self.candidates:
             for run in candidate_report.runs:
                 self._validate_run_matches_condition(candidate_report.candidate, run)
@@ -356,7 +371,10 @@ def evaluate_candidate(report: TransportCandidateReport) -> CandidateVerdict:
             detail=report.failure_reason or "dependency unavailable",
         )
         return CandidateVerdict(
-            candidate=report.candidate, dependency_available=False, passed=False, criteria=(criterion,)
+            candidate=report.candidate,
+            dependency_available=False,
+            passed=False,
+            criteria=(criterion,),
         )
 
     criteria = (
@@ -456,7 +474,9 @@ class _ConsumerState:
             self.preview_bytes_received += payload_len
 
 
-def _maybe_stall(sequence: int, stall_sequence: int, stall_ms: float, already_stalled: list[bool]) -> None:
+def _maybe_stall(
+    sequence: int, stall_sequence: int, stall_ms: float, already_stalled: list[bool]
+) -> None:
     """Sleep once, the first time ``sequence`` reaches ``stall_sequence``.
 
     Models a consumer thread that is momentarily too busy to read/respond -- the one
@@ -606,7 +626,8 @@ def _run_inference_loop(
         "producer_finished_monotonic_ns": finished_ns,
         "sent_control_count": condition.control_message_count,
         "producer_max_enqueue_ms": max(enqueue_durations_ms) if enqueue_durations_ms else 0.0,
-        "producer_blocked": bool(enqueue_durations_ms) and max(enqueue_durations_ms) > PRODUCER_BLOCK_THRESHOLD_MS,
+        "producer_blocked": bool(enqueue_durations_ms)
+        and max(enqueue_durations_ms) > PRODUCER_BLOCK_THRESHOLD_MS,
         "cpu_time_seconds": _cpu_time_seconds(),
     }
 
@@ -645,7 +666,9 @@ def _sleep_until(target_perf_counter_s: float) -> None:
         time.sleep(remaining)
 
 
-def _compute_recovery_frames(control: Sequence[_ReceivedControl], stall_sequence: int, control_rate_hz: float) -> int:
+def _compute_recovery_frames(
+    control: Sequence[_ReceivedControl], stall_sequence: int, control_rate_hz: float
+) -> int:
     """Count how many receives after the stall arrived "too fast" (draining a backlog).
 
     Purely consumer-local: uses only the consumer's own receive timestamps, so it needs
@@ -655,7 +678,9 @@ def _compute_recovery_frames(control: Sequence[_ReceivedControl], stall_sequence
     """
 
     ordered = sorted(control, key=lambda item: item.sequence)
-    start_index = next((i for i, item in enumerate(ordered) if item.sequence >= stall_sequence), None)
+    start_index = next(
+        (i for i, item in enumerate(ordered) if item.sequence >= stall_sequence), None
+    )
     if start_index is None or start_index + 1 >= len(ordered):
         return 0
     normal_gap_ns = (1.0 / control_rate_hz) * 1e9
@@ -668,9 +693,13 @@ def _compute_recovery_frames(control: Sequence[_ReceivedControl], stall_sequence
     return frames
 
 
-def _compute_max_age_ms(control: Sequence[_ReceivedControl], stall_sequence: int, recovery_frames: int) -> float:
+def _compute_max_age_ms(
+    control: Sequence[_ReceivedControl], stall_sequence: int, recovery_frames: int
+) -> float:
     ordered = sorted(control, key=lambda item: item.sequence)
-    start_index = next((i for i, item in enumerate(ordered) if item.sequence >= stall_sequence), None)
+    start_index = next(
+        (i for i, item in enumerate(ordered) if item.sequence >= stall_sequence), None
+    )
     if start_index is None:
         return 0.0
     settle_index = min(start_index + recovery_frames, len(ordered) - 1)
@@ -706,17 +735,23 @@ def _build_run_result(
         )
 
     non_warmup = [item for item in state.control if item.sequence >= condition.warmup_messages]
-    samples_ms = [max(0.0, (item.receive_monotonic_ns - item.send_monotonic_ns) / 1e6) for item in non_warmup]
+    samples_ms = [
+        max(0.0, (item.receive_monotonic_ns - item.send_monotonic_ns) / 1e6) for item in non_warmup
+    ]
     percentiles = compute_stage_percentiles(samples_ms)
 
     stall_sequence = condition.stall_sequence()
-    recovery_frames = _compute_recovery_frames(state.control, stall_sequence, condition.control_rate_hz)
+    recovery_frames = _compute_recovery_frames(
+        state.control, stall_sequence, condition.control_rate_hz
+    )
     max_age_ms = _compute_max_age_ms(state.control, stall_sequence, recovery_frames)
     sequence_regressions = _compute_sequence_regressions(state.control)
 
     sequences = [item.sequence for item in state.control]
     wall_seconds = max(
-        (producer["producer_finished_monotonic_ns"] - producer["producer_started_monotonic_ns"]) / 1e9, 1e-9
+        (producer["producer_finished_monotonic_ns"] - producer["producer_started_monotonic_ns"])
+        / 1e9,
+        1e-9,
     )
 
     return TransportRunResult(
@@ -777,11 +812,23 @@ def _http_producer(run: _RunCondition, *, as_json: bool) -> dict[str, Any]:
     lock = threading.Lock()
     control_thread = threading.Thread(
         target=_generic_sender_loop,
-        args=(control_mailbox, stop_event, lambda body: post(control_conn, "/control", body), bytes_sent, lock),
+        args=(
+            control_mailbox,
+            stop_event,
+            lambda body: post(control_conn, "/control", body),
+            bytes_sent,
+            lock,
+        ),
     )
     preview_thread = threading.Thread(
         target=_generic_sender_loop,
-        args=(preview_mailbox, stop_event, lambda body: post(preview_conn, "/preview", body), bytes_sent, lock),
+        args=(
+            preview_mailbox,
+            stop_event,
+            lambda body: post(preview_conn, "/preview", body),
+            bytes_sent,
+            lock,
+        ),
     )
     control_thread.start()
     preview_thread.start()
@@ -839,14 +886,22 @@ def _http_consumer(run: _RunCondition, *, as_json: bool) -> tuple[dict[str, Any]
 
     control_server = http.server.ThreadingHTTPServer(
         (run.host, run.control_port),
-        _make_http_consumer_handler(state, stall_sequence, condition.consumer_stall_ms, already_stalled, as_json, True),
+        _make_http_consumer_handler(
+            state, stall_sequence, condition.consumer_stall_ms, already_stalled, as_json, True
+        ),
     )
     preview_server = http.server.ThreadingHTTPServer(
         (run.host, run.preview_port),
-        _make_http_consumer_handler(state, stall_sequence, condition.consumer_stall_ms, already_stalled, as_json, False),
+        _make_http_consumer_handler(
+            state, stall_sequence, condition.consumer_stall_ms, already_stalled, as_json, False
+        ),
     )
-    control_thread = threading.Thread(target=control_server.serve_forever, kwargs={"poll_interval": 0.01})
-    preview_thread = threading.Thread(target=preview_server.serve_forever, kwargs={"poll_interval": 0.01})
+    control_thread = threading.Thread(
+        target=control_server.serve_forever, kwargs={"poll_interval": 0.01}
+    )
+    preview_thread = threading.Thread(
+        target=preview_server.serve_forever, kwargs={"poll_interval": 0.01}
+    )
     control_thread.start()
     preview_thread.start()
     print("READY", flush=True)
@@ -870,7 +925,11 @@ def _http_consumer(run: _RunCondition, *, as_json: bool) -> tuple[dict[str, Any]
 
 
 def _consumer_timeout_s(condition: BenchmarkCondition) -> float:
-    return condition.control_message_count / condition.control_rate_hz + condition.consumer_stall_ms / 1000.0 * 5 + 10.0
+    return (
+        condition.control_message_count / condition.control_rate_hz
+        + condition.consumer_stall_ms / 1000.0 * 5
+        + 10.0
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -904,10 +963,12 @@ def _zeromq_producer(run: _RunCondition) -> dict[str, Any]:
     bytes_sent = [0]
     lock = threading.Lock()
     control_thread = threading.Thread(
-        target=_generic_sender_loop, args=(control_mailbox, stop_event, control_socket.send, bytes_sent, lock)
+        target=_generic_sender_loop,
+        args=(control_mailbox, stop_event, control_socket.send, bytes_sent, lock),
     )
     preview_thread = threading.Thread(
-        target=_generic_sender_loop, args=(preview_mailbox, stop_event, preview_socket.send, bytes_sent, lock)
+        target=_generic_sender_loop,
+        args=(preview_mailbox, stop_event, preview_socket.send, bytes_sent, lock),
     )
     control_thread.start()
     preview_thread.start()
@@ -1130,7 +1191,10 @@ _CANDIDATES: dict[CandidateName, _CandidateImpl] = {
         dependency=_zeromq_dependency, producer=_zeromq_producer, consumer=_zeromq_consumer
     ),
     "grpc": _CandidateImpl(
-        dependency=_grpc_dependency, producer=_grpc_producer, consumer=_grpc_consumer, single_port=True
+        dependency=_grpc_dependency,
+        producer=_grpc_producer,
+        consumer=_grpc_consumer,
+        single_port=True,
     ),
 }
 
@@ -1153,8 +1217,11 @@ def _run_role_consumer(args: argparse.Namespace) -> None:
 
     condition = BenchmarkCondition.model_validate_json(Path(args.condition_file).read_text())
     run = _RunCondition(
-        condition=condition, host=args.host, control_port=args.control_port,
-        preview_port=args.preview_port, run_index=args.run_index,
+        condition=condition,
+        host=args.host,
+        control_port=args.control_port,
+        preview_port=args.preview_port,
+        run_index=args.run_index,
     )
     consumer_result, state = impl.consumer(run)
     Path(args.result_file).write_text(
@@ -1164,8 +1231,11 @@ def _run_role_consumer(args: argparse.Namespace) -> None:
                 "package_version": package_version,
                 "consumer": consumer_result,
                 "control": [
-                    {"sequence": item.sequence, "receive_monotonic_ns": item.receive_monotonic_ns,
-                     "send_monotonic_ns": item.send_monotonic_ns}
+                    {
+                        "sequence": item.sequence,
+                        "receive_monotonic_ns": item.receive_monotonic_ns,
+                        "send_monotonic_ns": item.send_monotonic_ns,
+                    }
                     for item in state.control
                 ],
             }
@@ -1177,14 +1247,19 @@ def _run_role_producer(args: argparse.Namespace) -> None:
     impl = _CANDIDATES[args.candidate]
     condition = BenchmarkCondition.model_validate_json(Path(args.condition_file).read_text())
     run = _RunCondition(
-        condition=condition, host=args.host, control_port=args.control_port,
-        preview_port=args.preview_port, run_index=args.run_index,
+        condition=condition,
+        host=args.host,
+        control_port=args.control_port,
+        preview_port=args.preview_port,
+        run_index=args.run_index,
     )
     producer_result = impl.producer(run)
     Path(args.result_file).write_text(json.dumps(producer_result))
 
 
-def _run_one_candidate_run(candidate: CandidateName, condition: BenchmarkCondition, run_index: int, host: str) -> TransportRunResult | None:
+def _run_one_candidate_run(
+    candidate: CandidateName, condition: BenchmarkCondition, run_index: int, host: str
+) -> TransportRunResult | None:
     """Spawn isolated consumer+producer subprocesses for one run; None on missing dependency."""
 
     impl = _CANDIDATES[candidate]
@@ -1200,15 +1275,29 @@ def _run_one_candidate_run(candidate: CandidateName, condition: BenchmarkConditi
         producer_result_file = Path(tmp) / "producer.json"
 
         base_args = [
-            sys.executable, str(Path(__file__).resolve()), "--candidate", candidate, "--host", host,
-            "--control-port", str(control_port), "--preview-port", str(preview_port),
-            "--run-index", str(run_index), "--condition-file", str(condition_file),
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--candidate",
+            candidate,
+            "--host",
+            host,
+            "--control-port",
+            str(control_port),
+            "--preview-port",
+            str(preview_port),
+            "--run-index",
+            str(run_index),
+            "--condition-file",
+            str(condition_file),
         ]
         env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parent.parent / "src")}
 
         consumer_proc = subprocess.Popen(
             [*base_args, "--role", "consumer", "--result-file", str(consumer_result_file)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
         )
         ready_line = consumer_proc.stdout.readline() if consumer_proc.stdout else ""
         if ready_line.startswith("DEPENDENCY_MISSING"):
@@ -1217,7 +1306,10 @@ def _run_one_candidate_run(candidate: CandidateName, condition: BenchmarkConditi
 
         producer_proc = subprocess.run(
             [*base_args, "--role", "producer", "--result-file", str(producer_result_file)],
-            env=env, capture_output=True, text=True, timeout=_consumer_timeout_s(condition),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=_consumer_timeout_s(condition),
         )
         if producer_proc.returncode != 0:
             raise RuntimeError(f"{candidate} producer failed: {producer_proc.stderr}")
@@ -1262,19 +1354,27 @@ def run_candidate_benchmark(
             reason = "dependency import succeeded in-process but failed in the isolated subprocess"
         except ImportError as error:
             reason = str(error)
-        return TransportCandidateReport(candidate=candidate, dependency_available=False, failure_reason=reason)
+        return TransportCandidateReport(
+            candidate=candidate, dependency_available=False, failure_reason=reason
+        )
 
     collected = [first_run]
     for run_index in range(1, runs):
         collected.append(_run_one_candidate_run(candidate, condition, run_index, host))
-    return TransportCandidateReport(candidate=candidate, dependency_available=True, runs=tuple(collected))
+    return TransportCandidateReport(
+        candidate=candidate, dependency_available=True, runs=tuple(collected)
+    )
 
 
 def run_full_benchmark(
-    condition: BenchmarkCondition, runs: int, host: str = "127.0.0.1",
+    condition: BenchmarkCondition,
+    runs: int,
+    host: str = "127.0.0.1",
     candidates: Sequence[CandidateName] = REQUIRED_CANDIDATES,
 ) -> TransportComparisonReport:
-    reports = [run_candidate_benchmark(candidate, condition, runs, host) for candidate in candidates]
+    reports = [
+        run_candidate_benchmark(candidate, condition, runs, host) for candidate in candidates
+    ]
     return TransportComparisonReport(condition=condition, candidates=tuple(reports))
 
 
@@ -1307,7 +1407,9 @@ _SMOKE_CONDITION = BenchmarkCondition(
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--role", choices=("producer", "consumer"), default=None, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--role", choices=("producer", "consumer"), default=None, help=argparse.SUPPRESS
+    )
     parser.add_argument("--candidate", choices=REQUIRED_CANDIDATES, help=argparse.SUPPRESS)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--control-port", type=int, help=argparse.SUPPRESS)
@@ -1317,7 +1419,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--result-file", help=argparse.SUPPRESS)
     parser.add_argument("--candidates", default=",".join(REQUIRED_CANDIDATES))
     parser.add_argument("--runs", type=int, default=5)
-    parser.add_argument("--smoke", action="store_true", help="100-message schema-validation smoke run")
+    parser.add_argument(
+        "--smoke", action="store_true", help="100-message schema-validation smoke run"
+    )
     parser.add_argument("--output", default="artifacts/perf/transport_comparison.json")
     return parser
 

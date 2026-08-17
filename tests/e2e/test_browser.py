@@ -562,7 +562,9 @@ def test_static_reference_geometry_uploads_once_regardless_of_pose_count() -> No
         if process is not None:
             terminate_child(process)
 
-    assert initial_uploads == "1", f"expected exactly one static upload batch, got {initial_uploads}"
+    assert initial_uploads == "1", (
+        f"expected exactly one static upload batch, got {initial_uploads}"
+    )
     assert final_uploads == initial_uploads, "100 pose updates must not trigger any re-upload"
 
 
@@ -698,7 +700,10 @@ def test_aspect_guard_reports_mismatch_against_the_physical_display() -> None:
                 "() => document.body.dataset.aspectOk !== undefined", timeout=20_000
             )
             assert matched.evaluate("() => document.body.dataset.aspectOk") == "true"
-            assert matched.evaluate("() => document.body.dataset.physicalProjectionVerified") == "false"
+            assert (
+                matched.evaluate("() => document.body.dataset.physicalProjectionVerified")
+                == "false"
+            )
             assert matched.locator("#aspect-warning").is_visible()
             matched.close()
 

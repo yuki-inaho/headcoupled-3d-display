@@ -112,9 +112,7 @@ def _exported_points(face: Any) -> list[list[float]]:
     return [[float(points[index, 0]), float(points[index, 1])] for index in EXPORTED_INDICES]
 
 
-def run_candidate(
-    pipeline: Any, video_path: Path, interval: int, warmup: int
-) -> dict[str, Any]:
+def run_candidate(pipeline: Any, video_path: Path, interval: int, warmup: int) -> dict[str, Any]:
     runner = TemporalRoiRunner(pipeline, detector_refresh_interval=interval)
     durations_ms: list[float] = []
     landmarks: list[list[list[float]]] = []
@@ -158,7 +156,9 @@ def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
         if not names or names[0] != "CUDAExecutionProvider":
             raise RuntimeError(f"{label} is not running on CUDA (actual={names!r})")
 
-    candidates = [run_candidate(pipeline, args.video, interval, args.warmup) for interval in args.intervals]
+    candidates = [
+        run_candidate(pipeline, args.video, interval, args.warmup) for interval in args.intervals
+    ]
     return {
         "schema_version": 1,
         "source": str(args.video.resolve()),

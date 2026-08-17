@@ -85,7 +85,11 @@ def _try_camera_intrinsics_from_opencv_yaml(path: Path) -> CameraIntrinsics | No
             image_width_px=width,
             image_height_px=height,
             camera_matrix=cast(
-                tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
+                tuple[
+                    tuple[float, float, float],
+                    tuple[float, float, float],
+                    tuple[float, float, float],
+                ],
                 tuple(
                     tuple(float(value) for value in row)
                     for row in np.asarray(matrix, dtype=np.float64).reshape(3, 3)
@@ -117,7 +121,9 @@ def _camera_intrinsics_from_tagcal_json(data: dict[str, Any]) -> CameraIntrinsic
         image_width_px=int(width),
         image_height_px=int(height),
         camera_matrix=cast(
-            tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
+            tuple[
+                tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]
+            ],
             tuple(tuple(float(value) for value in row) for row in matrix),
         ),
         distortion_coefficients=tuple(float(value) for value in np.asarray(distortion).reshape(-1)),
@@ -142,7 +148,9 @@ def _camera_intrinsics_from_yaml(data: dict[str, Any]) -> CameraIntrinsics:
         image_width_px=int(data["image_width"]),
         image_height_px=int(data["image_height"]),
         camera_matrix=cast(
-            tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
+            tuple[
+                tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]
+            ],
             tuple(tuple(float(value) for value in row) for row in matrix),
         ),
         distortion_coefficients=tuple(

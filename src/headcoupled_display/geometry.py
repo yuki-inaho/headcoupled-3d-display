@@ -56,12 +56,8 @@ def build_camera_to_display_matrix(mount: CameraMount) -> FloatArray:
     image_right_zero_roll = normalize(np.cross(forward, display_up))
     image_down_zero_roll = normalize(np.cross(forward, image_right_zero_roll))
 
-    image_right = normalize(
-        cos(roll) * image_right_zero_roll + sin(roll) * image_down_zero_roll
-    )
-    image_down = normalize(
-        -sin(roll) * image_right_zero_roll + cos(roll) * image_down_zero_roll
-    )
+    image_right = normalize(cos(roll) * image_right_zero_roll + sin(roll) * image_down_zero_roll)
+    image_down = normalize(-sin(roll) * image_right_zero_roll + cos(roll) * image_down_zero_roll)
 
     transform = np.eye(4, dtype=np.float64)
     transform[:3, :3] = np.column_stack([image_right, image_down, forward])
@@ -125,7 +121,9 @@ def mount_summary_from_camera_to_display(
     zero_roll_down = normalize(np.cross(forward, zero_roll_right))
     image_right = normalize(rotation[:, 0])
     roll_clockwise = degrees(
-        atan2(float(np.dot(image_right, zero_roll_down)), float(np.dot(image_right, zero_roll_right)))
+        atan2(
+            float(np.dot(image_right, zero_roll_down)), float(np.dot(image_right, zero_roll_right))
+        )
     )
 
     return MountSummary(
@@ -209,9 +207,7 @@ def project_display_point(
     point = np.asarray(point_display_m, dtype=np.float64)
     if point.shape != (3,):
         raise ValueError("point_display_m must be a 3-vector")
-    projection = asymmetric_projection_matrix(
-        display, eye_display_m, near_m=near_m, far_m=far_m
-    )
+    projection = asymmetric_projection_matrix(display, eye_display_m, near_m=near_m, far_m=far_m)
     view = view_matrix(eye_display_m)
     clip = projection @ view @ np.array([*point, 1.0], dtype=np.float64)
     if clip[3] <= 1e-12:
