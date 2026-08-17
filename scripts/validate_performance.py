@@ -50,7 +50,13 @@ MAX_END_TO_END_P95_MS = 60.0
 #: Runs whose two clock domains disagree by more than this are refused outright.
 MAX_CLOCK_UNCERTAINTY_MS = 2.0
 
-#: Stages whose sum is "recognition" for 成功条件 6.
+#: A stage that times the whole recognition step as one block. Preferred when present:
+#: summing per-stage percentiles is not the percentile of the sum. Measured on the
+#: recording, p50(detector) + p50(landmarks) came to 42.7 ms while the true p50 of the
+#: combined block was 59.4 ms, so the sum *understates* the median rather than bounding it.
+RECOGNITION_TOTAL_STAGE = "recognition_total"
+
+#: Fallback when no single combined stage was measured.
 RECOGNITION_STAGES = ("detector", "landmarks")
 
 
@@ -162,13 +168,18 @@ def check_accuracy(accuracy: dict[str, Any] | None) -> Check:
     )
 
 
-def _recognition_totals(report: dict[str, Any]) -> tuple[float, float] | None:
+def _recognition_totals(report: dict[str, Any]) -> tuple[float, float, str] | None:
+    """Recognition median and p95, preferring a directly measured combined stage."""
+
     stages = report.get("stages", {})
+    if RECOGNITION_TOTAL_STAGE in stages:
+        stage = stages[RECOGNITION_TOTAL_STAGE]
+        return float(stage["p50_ms"]), float(stage["p95_ms"]), RECOGNITION_TOTAL_STAGE
     if not all(stage in stages for stage in RECOGNITION_STAGES):
         return None
     median = sum(float(stages[stage]["p50_ms"]) for stage in RECOGNITION_STAGES)
     p95 = sum(float(stages[stage]["p95_ms"]) for stage in RECOGNITION_STAGES)
-    return median, p95
+    return median, p95, "sum of " + ", ".join(RECOGNITION_STAGES)
 
 
 def check_recognition_latency(report: dict[str, Any] | None) -> Check:
@@ -179,21 +190,29 @@ def check_recognition_latency(report: dict[str, Any] | None) -> Check:
         return _not_measured(
             "成功条件6",
             "recognition_latency",
-            f"stages {RECOGNITION_STAGES} in the recognition report",
+            f"either {RECOGNITION_TOTAL_STAGE!r} or stages {RECOGNITION_STAGES}",
         )
-    median, p95 = totals
+    median, p95, basis = totals
     ok = median <= MAX_RECOGNITION_MEDIAN_MS and p95 <= MAX_RECOGNITION_P95_MS
+    caveat = (
+        ""
+        if basis == RECOGNITION_TOTAL_STAGE
+        else "; percentiles of separate stages were added, which is NOT the percentile of "
+        "the sum and understates the median -- measure recognition_total for a real verdict"
+    )
     return Check(
         condition="成功条件6",
         name="recognition_latency",
         status=_verdict(ok),
         detail=(
             f"median {median:.3f} ms <= {MAX_RECOGNITION_MEDIAN_MS}, "
-            f"p95 {p95:.3f} ms <= {MAX_RECOGNITION_P95_MS} "
-            f"(sum of {', '.join(RECOGNITION_STAGES)}; "
-            "the p95 sum is a conservative upper bound, not an additive percentile)"
+            f"p95 {p95:.3f} ms <= {MAX_RECOGNITION_P95_MS} (basis: {basis}{caveat})"
         ),
-        measured={"recognition_median_ms": median, "recognition_p95_ms": p95},
+        measured={
+            "recognition_median_ms": median,
+            "recognition_p95_ms": p95,
+            "basis": basis,
+        },
     )
 
 

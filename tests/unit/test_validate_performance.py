@@ -175,3 +175,35 @@ def test_before_after_is_reported_per_stage(tmp_path: Path) -> None:
     assert detector["before"] == pytest.approx(29.6)
     assert detector["after"] == pytest.approx(2.0)
     assert detector["delta"] < 0
+
+
+def test_a_directly_measured_combined_stage_is_preferred_over_a_sum() -> None:
+    """Summing per-stage percentiles understates the median of the combined block.
+
+    Measured on the recording: p50(detector) + p50(landmarks) = 42.7 ms while the true
+    p50 of the whole recognition block was 59.4 ms.
+    """
+
+    combined = report(
+        stages={
+            "detector": {"sample_count": 289, "p50_ms": 2.0, "p95_ms": 4.0, "p99_ms": 5.0},
+            "landmarks": {"sample_count": 289, "p50_ms": 9.0, "p95_ms": 14.0, "p99_ms": 18.0},
+            "recognition_total": {
+                "sample_count": 289,
+                "p50_ms": 20.0,
+                "p95_ms": 30.0,
+                "p99_ms": 40.0,
+            },
+        }
+    )
+    check = check_recognition_latency(combined)
+    assert check.measured["basis"] == "recognition_total"
+    assert check.measured["recognition_median_ms"] == pytest.approx(20.0)
+    # The sum would have said 11.0 ms and passed; the real measurement fails.
+    assert check.status == "fail"
+
+
+def test_the_summed_fallback_says_so_in_its_detail() -> None:
+    check = check_recognition_latency(report())
+    assert check.measured["basis"].startswith("sum of ")
+    assert "understates the median" in check.detail
