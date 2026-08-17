@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import sys
 import time
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -12,7 +14,7 @@ import cv2
 import numpy as np
 
 from .face_model import HEAD_TO_OPENCV, FaceModel, canonical_face_model, load_personal_face_model
-from .geometry import normalize, transform_direction, transform_point
+from .geometry import normalize
 from .models import HardwareProfile, TrackingState, UserProfile
 from .profiles import resolved_camera_to_display
 
@@ -28,6 +30,28 @@ class FaceMeshUnavailableError(RuntimeError):
     pass
 
 
+class _FaceObservation(Protocol):
+    score: float
+    xy: np.ndarray
+    points: np.ndarray
+
+
+class _FaceMeshResult(Protocol):
+    faces: Sequence[_FaceObservation]
+
+
+@dataclass(frozen=True)
+class _PoseMeasurement:
+    left: np.ndarray
+    right: np.ndarray
+    cyclopean: np.ndarray
+    forward: np.ndarray
+    confidence: float
+    face_count: int
+    landmark_count: int
+    movement_m: float
+
+
 class HeadPoseEstimator:
     """Solve a metric dense-landmark PnP pose and derive pupil positions.
 
@@ -40,13 +64,13 @@ class HeadPoseEstimator:
     )
 
     def __init__(self, hardware: HardwareProfile, user: UserProfile) -> None:
-        self.hardware = hardware
-        self.user = user
         self.camera_matrix = np.asarray(hardware.camera.camera_matrix, dtype=np.float64)
         self.distortion = np.asarray(
             hardware.camera.distortion_coefficients, dtype=np.float64
         ).reshape(-1, 1)
-        self.camera_to_display = resolved_camera_to_display(hardware)
+        camera_to_display = resolved_camera_to_display(hardware)
+        self._display_rotation = np.ascontiguousarray(camera_to_display[:3, :3])
+        self._display_translation = np.ascontiguousarray(camera_to_display[:3, 3])
         self.face_model: FaceModel = (
             load_personal_face_model(Path(user.face_model_path))
             if user.face_model_path is not None
@@ -59,6 +83,13 @@ class HeadPoseEstimator:
             self.left_eye_head_m = np.asarray(user.left_eye_center_head_m, dtype=np.float64)
             self.right_eye_head_m = np.asarray(user.right_eye_center_head_m, dtype=np.float64)
         self.cyclopean_eye_head_m = 0.5 * (self.left_eye_head_m + self.right_eye_head_m)
+        self._pnp_object_points = np.ascontiguousarray(
+            self.face_model.pnp_points_opencv_m[self.LANDMARK_INDICES]
+        )
+        self._left_eye_opencv_m = self.left_eye_head_m * HEAD_TO_OPENCV
+        self._right_eye_opencv_m = self.right_eye_head_m * HEAD_TO_OPENCV
+        self._cyclopean_eye_opencv_m = self.cyclopean_eye_head_m * HEAD_TO_OPENCV
+        self._forward_axis_opencv = np.asarray(user.neutral_forward_axis_head) * HEAD_TO_OPENCV
 
     def estimate(
         self,
@@ -71,7 +102,7 @@ class HeadPoseEstimator:
         if not np.isfinite(image_points).all():
             raise ValueError("FaceMesh landmarks contain non-finite image coordinates")
         success, rotation_vector, translation_vector = cv2.solvePnP(
-            self.face_model.pnp_points_opencv_m[self.LANDMARK_INDICES],
+            self._pnp_object_points,
             image_points,
             self.camera_matrix,
             self.distortion,
@@ -82,24 +113,15 @@ class HeadPoseEstimator:
         rotation_camera_head, _ = cv2.Rodrigues(rotation_vector)
         translation_camera_head = translation_vector.reshape(3)
 
-        def head_to_camera(point_head: np.ndarray) -> np.ndarray:
-            return (
-                rotation_camera_head @ (np.asarray(point_head) * HEAD_TO_OPENCV)
-                + translation_camera_head
-            )
+        left_camera = rotation_camera_head @ self._left_eye_opencv_m + translation_camera_head
+        right_camera = rotation_camera_head @ self._right_eye_opencv_m + translation_camera_head
+        cyclopean_camera = rotation_camera_head @ self._cyclopean_eye_opencv_m + translation_camera_head
+        forward_camera = rotation_camera_head @ self._forward_axis_opencv
 
-        left_camera = head_to_camera(self.left_eye_head_m)
-        right_camera = head_to_camera(self.right_eye_head_m)
-        cyclopean_camera = head_to_camera(self.cyclopean_eye_head_m)
-        forward_camera = normalize(
-            rotation_camera_head
-            @ (np.asarray(self.user.neutral_forward_axis_head) * HEAD_TO_OPENCV)
-        )
-
-        left_display = transform_point(self.camera_to_display, left_camera)
-        right_display = transform_point(self.camera_to_display, right_camera)
-        cyclopean_display = transform_point(self.camera_to_display, cyclopean_camera)
-        forward_display = transform_direction(self.camera_to_display, forward_camera)
+        left_display = self._display_rotation @ left_camera + self._display_translation
+        right_display = self._display_rotation @ right_camera + self._display_translation
+        cyclopean_display = self._display_rotation @ cyclopean_camera + self._display_translation
+        forward_display = normalize(self._display_rotation @ forward_camera)
         return left_display, right_display, cyclopean_display, forward_display
 
 
@@ -151,51 +173,86 @@ class FaceMeshTrackingProvider:
         if not ok:
             raise RuntimeError("camera frame capture failed")
         result = self._pipeline.process(frame)
-        confidence = 0.0
-        stable = False
-        left = self._last_eye + np.array([-0.032, 0.0, 0.0])
-        right = self._last_eye + np.array([0.032, 0.0, 0.0])
-        forward = np.array([0.0, 0.0, -1.0])
-        diagnostics: dict[str, object] = {"face_count": len(result.faces)}
+        measurement = self._measure_result(result, frame)
+        state = self._build_state(measurement, started)
+        return state, self._encode_preview(frame, measurement)
 
-        if result.faces:
-            face = max(result.faces, key=lambda value: value.score)
-            confidence = float(face.score)
-            left, right, eye, forward = self._estimator.estimate(face.xy)
-            movement = float(np.linalg.norm(eye - self._last_eye))
-            stable = movement < 0.004 and confidence >= 0.75
-            self._last_eye = eye
-            diagnostics["landmark_count"] = int(face.points.shape[0])
-            diagnostics["eye_movement_m"] = movement
-            for point in face.xy[::8]:
-                cv2.circle(frame, tuple(np.rint(point).astype(int)), 1, (90, 220, 170), -1)
-        else:
-            eye = self._last_eye
+    def _measure_result(
+        self, result: _FaceMeshResult, frame: np.ndarray
+    ) -> _PoseMeasurement:
+        if not result.faces:
+            return self._fallback_measurement(len(result.faces))
+        face = max(result.faces, key=lambda value: value.score)
+        left, right, eye, forward = self._estimator.estimate(face.xy)
+        movement = float(np.linalg.norm(eye - self._last_eye))
+        self._last_eye = eye
+        self._draw_landmarks(frame, face.xy)
+        return _PoseMeasurement(
+            left=left,
+            right=right,
+            cyclopean=eye,
+            forward=forward,
+            confidence=float(face.score),
+            face_count=len(result.faces),
+            landmark_count=int(face.points.shape[0]),
+            movement_m=movement,
+        )
 
-        now_perf = time.perf_counter()
-        interval = max(now_perf - self._last_timestamp, 1e-6)
-        instant_fps = 1.0 / interval
-        self._fps_ema = instant_fps if self._fps_ema == 0 else 0.9 * self._fps_ema + 0.1 * instant_fps
-        self._last_timestamp = now_perf
-        inference_ms = (now_perf - started) * 1000.0
+    def _fallback_measurement(self, face_count: int) -> _PoseMeasurement:
+        eye = self._last_eye
+        return _PoseMeasurement(
+            left=eye + np.array([-0.032, 0.0, 0.0]),
+            right=eye + np.array([0.032, 0.0, 0.0]),
+            cyclopean=eye,
+            forward=np.array([0.0, 0.0, -1.0]),
+            confidence=0.0,
+            face_count=face_count,
+            landmark_count=0,
+            movement_m=0.0,
+        )
+
+    @staticmethod
+    def _draw_landmarks(frame: np.ndarray, landmarks_xy: np.ndarray) -> None:
+        for point in landmarks_xy[::8]:
+            cv2.circle(frame, tuple(np.rint(point).astype(int)), 1, (90, 220, 170), -1)
+
+    def _build_state(self, measurement: _PoseMeasurement, started: float) -> TrackingState:
+        now = time.perf_counter()
+        self._fps_ema = self._smoothed_fps(now)
         self._sequence += 1
-        state = TrackingState(
+        stable = measurement.movement_m < 0.004 and measurement.confidence >= 0.75
+        diagnostics: dict[str, object] = {"face_count": measurement.face_count}
+        if measurement.landmark_count:
+            diagnostics.update(
+                landmark_count=measurement.landmark_count,
+                eye_movement_m=measurement.movement_m,
+            )
+        return TrackingState(
             sequence=self._sequence,
             timestamp_unix_s=time.time(),
             source="facemesh",
-            confidence=confidence,
-            cyclopean_eye_display_m=tuple(float(value) for value in eye),
-            left_eye_display_m=tuple(float(value) for value in left),
-            right_eye_display_m=tuple(float(value) for value in right),
-            head_forward_display=tuple(float(value) for value in forward),
-            tracking_fps=float(self._fps_ema),
-            inference_ms=float(inference_ms),
+            confidence=measurement.confidence,
+            cyclopean_eye_display_m=tuple(float(value) for value in measurement.cyclopean),
+            left_eye_display_m=tuple(float(value) for value in measurement.left),
+            right_eye_display_m=tuple(float(value) for value in measurement.right),
+            head_forward_display=tuple(float(value) for value in measurement.forward),
+            tracking_fps=self._fps_ema,
+            inference_ms=(now - started) * 1000.0,
             stable=stable,
             diagnostics=diagnostics,
         )
+
+    def _smoothed_fps(self, now: float) -> float:
+        interval = max(now - self._last_timestamp, 1e-6)
+        self._last_timestamp = now
+        instant_fps = 1.0 / interval
+        self._fps_ema = instant_fps if self._fps_ema == 0.0 else 0.9 * self._fps_ema + 0.1 * instant_fps
+        return self._fps_ema
+
+    def _encode_preview(self, frame: np.ndarray, measurement: _PoseMeasurement) -> bytes:
         cv2.putText(
             frame,
-            f"FaceMesh {self._fps_ema:.1f} fps / {confidence:.2f}",
+            f"FaceMesh {self._fps_ema:.1f} fps / {measurement.confidence:.2f}",
             (16, 28),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.65,
@@ -206,7 +263,7 @@ class FaceMeshTrackingProvider:
         encoded_ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 82])
         if not encoded_ok:
             raise RuntimeError("failed to encode camera preview")
-        return state, encoded.tobytes()
+        return encoded.tobytes()
 
     def close(self) -> None:  # pragma: no cover - hardware dependent
         self._capture.release()
