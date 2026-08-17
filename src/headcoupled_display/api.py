@@ -16,7 +16,12 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .calibration import fit_display_transform
-from .face_model import load_personal_face_model
+from .face_model import (
+    LEFT_IRIS_CENTRE,
+    RIGHT_IRIS_CENTRE,
+    face_model_for_user,
+    load_personal_face_model,
+)
 from .models import (
     CalibrationDataset,
     HardwareProfile,
@@ -30,6 +35,7 @@ from .profiles import (
     profile_with_resolved_matrix,
     summarize_profile,
 )
+from .protocol import LANDMARK_INDICES
 from .runtime import RuntimeCoordinator
 from .synthetic import SyntheticTrackingProvider, run_synthetic_calibration
 from .tracking import (
@@ -287,6 +293,8 @@ def _register_http_routes(application: FastAPI, context: _ApplicationContext) ->
             "warning": _profile_warning(hardware),
         }
 
+    _register_face_model_route(application, user)
+
     @application.get("/api/runtime")
     async def runtime_status() -> dict[str, object]:
         return runtime.status(selected_source).model_dump(mode="json")
@@ -327,15 +335,49 @@ def _register_http_routes(application: FastAPI, context: _ApplicationContext) ->
         }
 
 
+def _register_face_model_route(application: FastAPI, user: UserProfile) -> None:
+    @application.get("/api/face-model")
+    async def face_model() -> dict[str, object]:
+        """The metric face template, fetched once so the dashboard can draw the head.
+
+        This replaces a per-frame dense-mesh lane. ``/ws/pose`` already carries both eye
+        centres and the forward axis, which pin down a rigid frame completely, so the
+        browser can place this template itself and nothing needs to be sent per frame.
+        The dense lane cost 3840 bytes per frame on a synchronous POST that the capture
+        loop waited for; the same picture now costs one request at connect time.
+
+        The points are the ones PnP actually solves against -- personal model when the
+        profile names one, canonical otherwise -- so the drawing cannot silently diverge
+        from what the tracker believes a face is.
+        """
+
+        model = face_model_for_user(user)
+        return {
+            "points_head_m": model.points_head_m.tolist(),
+            "left_iris_index": LEFT_IRIS_CENTRE,
+            "right_iris_index": RIGHT_IRIS_CENTRE,
+            "pnp_indices": list(LANDMARK_INDICES),
+            "is_personal": model.is_personal,
+            "neutral_forward_axis_head": list(user.neutral_forward_axis_head),
+            "frame": "head: +X=viewer's right, +Y=up, +Z=out of the face",
+        }
+
+
 def _register_ipc_input_routes(application: FastAPI, ipc_input: IpcFaceMeshInput | None) -> None:
-    """Register the independent IPC lanes: control, preview and dense mesh.
+    """Register the independent IPC lanes: control and preview.
 
     Control is a fixed-size binary pose packet (``application/octet-stream``, see
-    ``protocol.py``); preview is an already-compressed JPEG (``image/jpeg``); mesh is the
-    recogniser's dense landmarks (``application/octet-stream``), which the dashboard can
-    draw instead of the camera image. These are deliberately separate endpoints and
-    payload formats rather than one JSON envelope, so a broken or throttled preview --
-    or a viewer that only wants the mesh -- can never block or delay a control update.
+    ``protocol.py``); preview is an already-compressed JPEG (``image/jpeg``). They are
+    deliberately separate endpoints and payload formats rather than one JSON envelope,
+    so a broken or throttled preview can never block or delay a control update.
+
+    A third "dense mesh" lane used to sit here, POSTing all 478 landmarks per frame so
+    the dashboard could draw the recognised face. It was removed: ``/ws/pose`` already
+    carries both eye centres and the forward axis, which fix a rigid frame completely,
+    so the browser can place a face template itself with nothing sent per frame. The
+    lane was also actively harmful -- its POST was synchronous in the producer's capture
+    loop and, unlike preview, uncapped, so every frame's control packet waited on it
+    (measured 10.23 FPS against a 27-30 FPS recognition rate).
     """
 
     def _require_ipc_source() -> IpcFaceMeshInput:
@@ -366,45 +408,6 @@ def _register_ipc_input_routes(application: FastAPI, ipc_input: IpcFaceMeshInput
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return Response(status_code=204)
-
-    @application.post("/api/input/facemesh/mesh")
-    async def publish_facemesh_mesh(request: Request) -> dict[str, int]:
-        """Accept one dense-mesh packet; forwarded to viewers exactly as received."""
-
-        port = _require_ipc_source()
-        body = await request.body()
-        try:
-            sequence = port.publish_mesh(body)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"accepted_sequence": sequence}
-
-
-def _register_mesh_websocket(application: FastAPI, ipc_input: IpcFaceMeshInput | None) -> None:
-    @application.websocket("/ws/mesh")
-    async def mesh_websocket(websocket: WebSocket) -> None:
-        """Stream the dense mesh as raw bytes, latest-value.
-
-        Closed immediately when the server is not running an IPC source: there is no
-        mesh to send, and leaving the socket open would look like "connected, no face".
-        """
-
-        await websocket.accept()
-        if ipc_input is None:
-            await websocket.close(code=1011, reason="server was not started with --source ipc")
-            return
-        version = 0
-        try:
-            while True:
-                try:
-                    version, packet = await asyncio.to_thread(
-                        ipc_input.wait_for_mesh, version, timeout_s=3.0
-                    )
-                except TimeoutError:
-                    continue
-                await websocket.send_bytes(packet)
-        except (WebSocketDisconnect, RuntimeError):
-            return
 
 
 def _register_clock_route(application: FastAPI) -> None:
@@ -499,7 +502,6 @@ def create_app(
     application.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
     _register_http_routes(application, context)
     _register_ipc_input_routes(application, context.ipc_input)
-    _register_mesh_websocket(application, context.ipc_input)
     _register_clock_route(application)
     _register_websocket_routes(application, context.runtime)
 

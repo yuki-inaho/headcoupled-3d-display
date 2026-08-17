@@ -428,11 +428,6 @@ class IpcFaceMeshInput:
         self._condition = Condition()
         self._latest_control: protocol.ControlPacket | None = None
         self._latest_preview: bytes | None = None
-        # The dense mesh is a third, independent lane. It is what the dashboard draws
-        # when the operator wants to see the recognised face rather than the camera
-        # image, and like preview it must never gate the control lane.
-        self._latest_mesh: bytes | None = None
-        self._mesh_version = 0
         self._published_version = 0
         self._consumed_version = 0
         self._closed = False
@@ -471,44 +466,6 @@ class IpcFaceMeshInput:
             if self._closed:
                 raise RuntimeError("FaceMesh IPC input is closed")
             self._latest_preview = jpeg
-
-    def publish_mesh(self, packet: bytes) -> int:
-        """Accept one dense-mesh packet and return its sequence number.
-
-        Validated but not otherwise interpreted: the payload is forwarded to viewers as
-        received. Decoding here would mean re-encoding to send it on, which is the cost
-        the preview lane already exists to avoid; the check is on the header only.
-        """
-
-        decoded = protocol.decode_mesh_packet(packet)
-        with self._condition:
-            if self._closed:
-                raise RuntimeError("FaceMesh IPC input is closed")
-            self._latest_mesh = packet
-            self._mesh_version += 1
-            self._condition.notify_all()
-        return decoded.sequence
-
-    def wait_for_mesh(self, after_version: int, *, timeout_s: float = 3.0) -> tuple[int, bytes]:
-        """Block until a mesh newer than ``after_version`` is available.
-
-        Latest-value, like every other lane here: a viewer that falls behind skips to the
-        current mesh instead of replaying a backlog of stale faces.
-        """
-
-        deadline = time.monotonic() + timeout_s
-        with self._condition:
-            while not self._closed and (
-                self._latest_mesh is None or self._mesh_version <= after_version
-            ):
-                remaining = deadline - time.monotonic()
-                if remaining <= 0.0:
-                    raise TimeoutError("waiting for a FaceMesh IPC mesh packet timed out")
-                self._condition.wait(remaining)
-            if self._closed:
-                raise RuntimeError("FaceMesh IPC input is closed")
-            assert self._latest_mesh is not None
-            return self._mesh_version, self._latest_mesh
 
     def next_frame(self) -> FaceMeshInputFrame:
         """Block for the next *control* update only; preview never gates this call.

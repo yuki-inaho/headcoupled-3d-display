@@ -1,5 +1,5 @@
 import { PointCloudRenderer } from "./renderer.js";
-import { MeshView, connectMesh } from "./mesh_view.js";
+import { FaceView, loadFaceTemplate } from "./face_view.js";
 
 const byId = (id) => document.getElementById(id);
 const setText = (id, value) => { const element = byId(id); if (element) element.textContent = value; };
@@ -13,7 +13,7 @@ const PHYSICAL_ASPECT_RATIO = 0.596 / 0.335;
 const ASPECT_TOLERANCE = 0.02;
 
 let renderer = null;
-let meshView = null;
+let faceView = null;
 let lastCameraUrl = null;
 let poseReconnectTimer = null;
 let cameraReconnectTimer = null;
@@ -94,6 +94,9 @@ function connectPose() {
       pose.sequence,
       pose.diagnostics?.producer_inference_unix_ns ?? null,
     );
+    // The head drawing rides on this same message: it is placed from the eye centres and
+    // the forward axis already in the payload, so it costs no extra transport.
+    faceView?.update(pose);
     byId("pose-sequence").dataset.sequence = String(pose.sequence);
     setText("pose-sequence", `#${pose.sequence}`);
     setText("confidence", format(pose.confidence, 2));
@@ -202,17 +205,17 @@ function updateAspectState() {
 }
 
 /**
- * Switch the input panel between the camera image and the recognised face mesh.
+ * Switch the input panel between the camera image and the tracked head.
  *
- * Both streams stay connected either way: the point of this control is to choose what is
- * shown, not to decide what the tracker is doing, and reconnecting on every toggle would
- * make the mesh blank for a frame each time.
+ * The camera stream stays connected either way: this control chooses what is shown, not
+ * what the tracker does. The head drawing needs no stream of its own -- it is placed from
+ * the pose that /ws/pose is already delivering.
  */
 function setInputView(view) {
   byId("camera-frame-container").dataset.inputView = view;
   const button = byId("input-view-toggle");
-  button.setAttribute("aria-pressed", String(view === "mesh"));
-  button.textContent = view === "mesh" ? "映像表示" : "顔メッシュ表示";
+  button.setAttribute("aria-pressed", String(view === "face"));
+  button.textContent = view === "face" ? "映像表示" : "頭部姿勢表示";
   document.body.dataset.inputView = view;
 }
 
@@ -220,7 +223,7 @@ function setupControls() {
   byId("calibrate-synthetic").addEventListener("click", runSyntheticCalibration);
   byId("input-view-toggle").addEventListener("click", () => {
     const current = byId("camera-frame-container").dataset.inputView;
-    setInputView(current === "mesh" ? "image" : "mesh");
+    setInputView(current === "face" ? "image" : "face");
   });
   byId("fullscreen-button").addEventListener("click", async () => {
     if (!document.fullscreenElement) await document.documentElement.requestFullscreen();
@@ -245,8 +248,8 @@ async function main() {
     await loadProfile();
     connectPose();
     connectCamera();
-    meshView = new MeshView(byId("mesh-canvas"));
-    connectMesh(meshView);
+    faceView = new FaceView(byId("face-canvas"));
+    void loadFaceTemplate(faceView);
     setInputView("image");
     updateAspectState();
     document.body.dataset.ready = "true";

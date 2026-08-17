@@ -167,3 +167,15 @@ def load_personal_face_model(path: Path) -> FaceModel:
             f"(det={determinant:.3f}, rotation={angle_deg:.2f} deg, rms={rms_m * 1000:.2f} mm)"
         )
     return FaceModel(points_head_m=points_head_m, source=str(path), is_personal=True)
+
+
+def face_model_for_user(user: object) -> FaceModel:
+    """Return the face model the tracking stack uses for this user.
+
+    One place decides personal-vs-canonical so the dashboard cannot end up drawing a
+    different template from the one PnP is solving against. ``user`` is a ``UserProfile``;
+    it is typed loosely here only to keep this module free of the pydantic model import.
+    """
+
+    path = getattr(user, "face_model_path", None)
+    return canonical_face_model() if path is None else load_personal_face_model(Path(path))

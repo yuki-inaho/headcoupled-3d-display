@@ -33,9 +33,7 @@ if str(_PROTOCOL_SRC_DIR) not in sys.path:
 from headcoupled_display.protocol import (  # noqa: E402 - after the sys.path insert above
     LANDMARK_INDICES,
     ControlPacket,
-    MeshPacket,
     encode_control_packet,
-    encode_mesh_packet,
 )
 
 
@@ -798,43 +796,6 @@ def _publish_control_for_face(
     publisher.publish_bytes(encode_control_packet(packet), content_type="application/octet-stream")
 
 
-def publish_mesh_best_effort(
-    publisher: IpcPublisher, packet: bytes, *, log: Callable[[str], None] = print
-) -> bool:
-    """Send one dense-mesh packet, swallowing any failure.
-
-    The mesh is what a viewer looks at, not what the display is driven by. A viewer that
-    is not listening, a server that does not know this lane, or a hiccup on the way must
-    never take the control lane down with it. ``RuntimeError`` is caught alongside
-    ``OSError`` for the same reason the preview lane catches it: ``IpcPublisher`` raises
-    it for a non-2xx response, and an HTTP error is exactly the case this exists to
-    absorb. The return value is for logging only; callers must not branch on it.
-    """
-
-    try:
-        publisher.publish_bytes(packet, content_type="application/octet-stream")
-    except (OSError, RuntimeError) as exc:
-        log(f"mesh publish failed (control lane unaffected): {exc}")
-        return False
-    return True
-
-
-def _publish_mesh_for_face(publisher: IpcPublisher, face: Any, sequence: int) -> None:
-    """Send the recogniser's dense landmarks in source-image pixel coordinates.
-
-    Sent at full recognition rate rather than the preview's 10 FPS cap: at 478 points
-    this is under 4 kB, roughly a fifth of one preview JPEG, and unlike the preview it is
-    what the operator is watching move when the mesh view is selected.
-    """
-
-    points = face.points[:, :2]
-    packet = MeshPacket(
-        points_px=tuple((float(x), float(y)) for x, y in points),
-        sequence=sequence,
-    )
-    publish_mesh_best_effort(publisher, encode_mesh_packet(packet))
-
-
 def _maybe_publish_preview(
     publisher: IpcPublisher,
     state: _ProducerLoopState,
@@ -862,7 +823,6 @@ def _process_one_frame(
     state: _ProducerLoopState,
     control_publisher: IpcPublisher,
     preview_publisher: IpcPublisher,
-    mesh_publisher: IpcPublisher,
     jpeg_quality: int,
 ) -> Any:
     capture_monotonic_ns = time.perf_counter_ns()
@@ -877,7 +837,6 @@ def _process_one_frame(
     face = result.faces[0] if result.faces else None
     if face is not None:
         _publish_control_for_face(control_publisher, face, state.frame_index, timings)
-        _publish_mesh_for_face(mesh_publisher, face, state.frame_index)
     _maybe_publish_preview(preview_publisher, state, frame, face, jpeg_quality)
     return result
 
@@ -909,7 +868,6 @@ def main() -> None:
     endpoint_base = args.endpoint.rstrip("/")
     control_publisher = IpcPublisher(f"{endpoint_base}/control")
     preview_publisher = IpcPublisher(f"{endpoint_base}/preview")
-    mesh_publisher = IpcPublisher(f"{endpoint_base}/mesh")
     print(
         f"source: {source_value} (pacing={pacing.value}) -> "
         f"control={control_publisher.endpoint} preview={preview_publisher.endpoint}"
@@ -927,7 +885,6 @@ def main() -> None:
                 state,
                 control_publisher,
                 preview_publisher,
-                mesh_publisher,
                 args.jpeg_quality,
             )
             state.frame_index += 1
@@ -938,7 +895,6 @@ def main() -> None:
         frame_source.close()
         control_publisher.close()
         preview_publisher.close()
-        mesh_publisher.close()
 
 
 if __name__ == "__main__":
