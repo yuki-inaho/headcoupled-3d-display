@@ -710,8 +710,85 @@ def assert_cuda_providers(pipeline: Any) -> dict[str, list[str]]:
     return actual
 
 
-def main() -> None:
-    args = parse_args()
+@dataclass
+class _ProducerLoopState:
+    """Mutable per-run state, kept out of main() so the loop body stays testable."""
+
+    frame_index: int = 0
+    last_preview_sent_s: float | None = None
+    started: float = 0.0
+
+
+def _publish_control_for_face(
+    publisher: IpcPublisher, face: Any, frame_index: int, timings: tuple[int, int, int, int]
+) -> None:
+    """Send one control packet.
+
+    A miss (no face this frame) is simply not published: the wire format only carries
+    finite landmark coordinates (protocol.py rejects NaN/Inf), so there is nothing valid
+    to send. A *sustained* miss is surfaced by the server's own stale-input timeout
+    (RuntimeCoordinator.stale_after_s); a single skipped frame is invisible at video
+    frame rate.
+    """
+
+    capture_monotonic_ns, capture_unix_ns, inference_monotonic_ns, inference_unix_ns = timings
+    packet = build_control_packet(
+        face,
+        sequence=frame_index,
+        capture_monotonic_ns=capture_monotonic_ns,
+        capture_unix_ns=capture_unix_ns,
+        inference_monotonic_ns=inference_monotonic_ns,
+        inference_unix_ns=inference_unix_ns,
+    )
+    publisher.publish_bytes(encode_control_packet(packet), content_type="application/octet-stream")
+
+
+def _maybe_publish_preview(
+    publisher: IpcPublisher,
+    state: _ProducerLoopState,
+    frame: np.ndarray,
+    face: Any,
+    jpeg_quality: int,
+) -> None:
+    """Publish a preview if the rate cap allows it. Never raises into the control lane."""
+
+    now_s = time.perf_counter()
+    if not _should_publish_preview(now_s, state.last_preview_sent_s):
+        return
+    state.last_preview_sent_s = now_s
+    running_fps = state.frame_index / max(now_s - state.started, 1e-6)
+    landmarks_xy = face.points[:, :2] if face is not None else None
+    preview_bytes = encode_preview_frame(
+        frame, landmarks_xy, f"IPC {running_fps:.1f} FPS", jpeg_quality=jpeg_quality
+    )
+    publish_preview_best_effort(publisher, preview_bytes)
+
+
+def _process_one_frame(
+    runner: Any,
+    frame: np.ndarray,
+    state: _ProducerLoopState,
+    control_publisher: IpcPublisher,
+    preview_publisher: IpcPublisher,
+    jpeg_quality: int,
+) -> Any:
+    capture_monotonic_ns = time.perf_counter_ns()
+    capture_unix_ns = time.time_ns()
+    result = runner.process(frame)
+    timings = (
+        capture_monotonic_ns,
+        capture_unix_ns,
+        time.perf_counter_ns(),
+        time.time_ns(),
+    )
+    face = result.faces[0] if result.faces else None
+    if face is not None:
+        _publish_control_for_face(control_publisher, face, state.frame_index, timings)
+    _maybe_publish_preview(preview_publisher, state, frame, face, jpeg_quality)
+    return result
+
+
+def _build_pipeline_and_report_providers(args: argparse.Namespace) -> Any:
     from facemesh_tracking.pipeline import FaceMeshPipeline
     from facemesh_tracking.runtime import Backend
 
@@ -722,6 +799,12 @@ def main() -> None:
         print(f"providers (actual): {assert_cuda_providers(pipeline)}")
     else:
         print(f"providers (requested, backend={args.backend}): {pipeline.detector.providers}")
+    return pipeline
+
+
+def main() -> None:
+    args = parse_args()
+    pipeline = _build_pipeline_and_report_providers(args)
     # --camera is a deprecated alias for --source; only override when explicitly given.
     source_value = args.camera if args.camera is not None else args.source
     pacing = Pacing(args.pacing)
@@ -736,56 +819,20 @@ def main() -> None:
         f"source: {source_value} (pacing={pacing.value}) -> "
         f"control={control_publisher.endpoint} preview={preview_publisher.endpoint}"
     )
-    frame_index = 0
-    last_preview_sent_s: float | None = None
-    started = time.perf_counter()
+    state = _ProducerLoopState(started=time.perf_counter())
     try:
-        while not args.max_frames or frame_index < args.max_frames:
+        while not args.max_frames or state.frame_index < args.max_frames:
             ok, frame = frame_source.read()
             if not ok:
-                print(f"frame source exhausted (EOF) after {frame_index} frames")
+                print(f"frame source exhausted (EOF) after {state.frame_index} frames")
                 break
-            capture_monotonic_ns = time.perf_counter_ns()
-            capture_unix_ns = time.time_ns()
-            result = runner.process(frame)
-            inference_monotonic_ns = time.perf_counter_ns()
-            inference_unix_ns = time.time_ns()
-            face = result.faces[0] if result.faces else None
-            if face is not None:
-                # A miss (face is None) is simply not published this frame: the control
-                # wire format only carries finite landmark coordinates (protocol.py
-                # rejects NaN/Inf), so there is nothing valid to send. A *sustained* miss
-                # is surfaced by the server's own stale-input timeout
-                # (RuntimeCoordinator.stale_after_s); a single skipped frame here is
-                # invisible at video frame rate.
-                packet = build_control_packet(
-                    face,
-                    sequence=frame_index,
-                    capture_monotonic_ns=capture_monotonic_ns,
-                    capture_unix_ns=capture_unix_ns,
-                    inference_monotonic_ns=inference_monotonic_ns,
-                    inference_unix_ns=inference_unix_ns,
-                )
-                control_publisher.publish_bytes(
-                    encode_control_packet(packet), content_type="application/octet-stream"
-                )
-            now_s = time.perf_counter()
-            if _should_publish_preview(now_s, last_preview_sent_s):
-                last_preview_sent_s = now_s
-                running_fps = frame_index / max(now_s - started, 1e-6)
-                landmarks_xy = face.points[:, :2] if face is not None else None
-                preview_bytes = encode_preview_frame(
-                    frame,
-                    landmarks_xy,
-                    f"IPC {running_fps:.1f} FPS",
-                    jpeg_quality=args.jpeg_quality,
-                )
-                # Preview publish failures must never stop the control lane above.
-                publish_preview_best_effort(preview_publisher, preview_bytes)
-            frame_index += 1
-            if frame_index % 30 == 0:
-                fps = frame_index / max(time.perf_counter() - started, 1e-6)
-                print(f"published={frame_index}  faces={len(result.faces)}  {fps:.1f} FPS")
+            result = _process_one_frame(
+                runner, frame, state, control_publisher, preview_publisher, args.jpeg_quality
+            )
+            state.frame_index += 1
+            if state.frame_index % 30 == 0:
+                fps = state.frame_index / max(time.perf_counter() - state.started, 1e-6)
+                print(f"published={state.frame_index}  faces={len(result.faces)}  {fps:.1f} FPS")
     finally:
         frame_source.close()
         control_publisher.close()
