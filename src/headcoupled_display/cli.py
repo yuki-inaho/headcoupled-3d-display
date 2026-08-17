@@ -41,7 +41,7 @@ def serve(
         Path | None, typer.Option(exists=True, dir_okay=False, help="tagcal calibration.json/YAML")
     ] = None,
 ) -> None:
-    """Serve the dashboard, with live FaceMesh or a recorded FaceMesh replay."""
+    """Serve the dashboard with direct, recorded, or local-IPC FaceMesh input."""
 
     if source == "replay" and any(
         value is None for value in (replay_landmarks, replay_video, face_model, intrinsics)
@@ -49,6 +49,8 @@ def serve(
         raise typer.BadParameter(
             "replay requires --replay-landmarks, --replay-video, --face-model, and --intrinsics"
         )
+    if source == "ipc" and any(value is None for value in (face_model, intrinsics)):
+        raise typer.BadParameter("ipc requires --face-model and --intrinsics")
 
     application = create_app(
         profile_path=profile or default_hardware_profile_path(),

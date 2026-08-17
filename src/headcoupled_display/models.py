@@ -10,7 +10,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Vector3 = tuple[float, float, float]
-TrackingSource = Literal["synthetic", "facemesh", "replay"]
+TrackingSource = Literal["synthetic", "facemesh", "replay", "ipc"]
 Matrix4 = tuple[
     tuple[float, float, float, float],
     tuple[float, float, float, float],

@@ -25,7 +25,13 @@ from .profiles import (
 )
 from .runtime import RuntimeCoordinator
 from .synthetic import SyntheticTrackingProvider, run_synthetic_calibration
-from .tracking import FaceMeshReplayProvider, FaceMeshTrackingProvider, TrackingProvider
+from .tracking import (
+    FaceMeshIpcProvider,
+    FaceMeshReplayProvider,
+    FaceMeshTrackingProvider,
+    IpcFaceMeshInput,
+    TrackingProvider,
+)
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = PACKAGE_ROOT / "static"
@@ -72,6 +78,7 @@ def _provider_factory(
     backend: str,
     replay_landmarks_path: Path | None,
     replay_video_path: Path | None,
+    ipc_input: IpcFaceMeshInput | None,
 ) -> Callable[[], TrackingProvider]:
     if source == "synthetic":
         return lambda: SyntheticTrackingProvider(hardware)
@@ -84,6 +91,10 @@ def _provider_factory(
             landmarks_path=replay_landmarks_path,
             video_path=replay_video_path,
         )
+    if source == "ipc":
+        if ipc_input is None:  # pragma: no cover - guarded while the context is constructed
+            raise ValueError("IPC source requires an IPC input port")
+        return lambda: FaceMeshIpcProvider(hardware, user, frame_source=ipc_input)
     return lambda: FaceMeshTrackingProvider(
         hardware,
         user,
@@ -100,11 +111,12 @@ class _ApplicationContext:
     user: UserProfile
     runtime: RuntimeCoordinator
     source: TrackingSource
+    ipc_input: IpcFaceMeshInput | None
 
 
 def _select_source(source: TrackingSource | None) -> TrackingSource:
     selected = source or os.getenv("HEADCOUPLED_SOURCE", "synthetic")
-    if selected not in {"synthetic", "facemesh", "replay"}:
+    if selected not in {"synthetic", "facemesh", "replay", "ipc"}:
         raise ValueError(f"unsupported tracking source: {selected}")
     return cast(TrackingSource, selected)
 
@@ -171,6 +183,7 @@ def _build_context(
     if user.face_model_path is not None:
         load_personal_face_model(Path(user.face_model_path))
     selected_source = _select_source(source)
+    ipc_input = IpcFaceMeshInput(hardware) if selected_source == "ipc" else None
     runtime = RuntimeCoordinator(
         hardware,
         _provider_factory(
@@ -181,10 +194,15 @@ def _build_context(
             backend=backend,
             replay_landmarks_path=replay_landmarks_path,
             replay_video_path=replay_video_path,
+            ipc_input=ipc_input,
         ),
     )
     return _ApplicationContext(
-        hardware=hardware, user=user, runtime=runtime, source=selected_source
+        hardware=hardware,
+        user=user,
+        runtime=runtime,
+        source=selected_source,
+        ipc_input=ipc_input,
     )
 
 
@@ -279,6 +297,20 @@ def _register_http_routes(application: FastAPI, context: _ApplicationContext) ->
         }
 
 
+def _register_ipc_input_route(application: FastAPI, ipc_input: IpcFaceMeshInput | None) -> None:
+    @application.post("/api/input/facemesh", status_code=202)
+    async def publish_facemesh_input(payload: dict[str, object]) -> dict[str, int]:
+        """Accept one complete localhost frame/landmark pair from the FaceMesh process."""
+
+        if ipc_input is None:
+            raise HTTPException(status_code=409, detail="server was not started with --source ipc")
+        try:
+            version = ipc_input.publish_payload(payload)
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"accepted_version": version}
+
+
 def _register_websocket_routes(application: FastAPI, runtime: RuntimeCoordinator) -> None:
 
     @application.websocket("/ws/pose")
@@ -344,6 +376,7 @@ def create_app(
     )
     application.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
     _register_http_routes(application, context)
+    _register_ipc_input_route(application, context.ipc_input)
     _register_websocket_routes(application, context.runtime)
 
     return application

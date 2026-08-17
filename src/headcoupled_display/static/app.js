@@ -63,6 +63,7 @@ function connectPose() {
       synthetic: "合成追跡",
       facemesh: "顔追跡（ライブ）",
       replay: "顔追跡（録画再生）",
+      ipc: "顔追跡（IPCライブ）",
     }[pose.source] || "追跡入力";
     statusChip(pose.confidence >= 0.75 ? "ok" : "warn", sourceLabel);
   });

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 import sys
@@ -9,6 +11,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Condition
 from typing import Protocol, runtime_checkable
 
 import cv2
@@ -285,6 +288,90 @@ class RecordedFaceMeshInput:
         self._capture.release()
 
 
+class IpcFaceMeshInput:
+    """Latest-value localhost input port for a separate FaceMesh Python environment.
+
+    Producers submit one JSON object containing an MJPEG frame and the corresponding
+    FaceMesh landmarks. Only the newest complete pair is retained, matching the browser
+    runtime's no-backlog policy.
+    """
+
+    def __init__(self, hardware: HardwareProfile) -> None:
+        self._expected_size = (hardware.camera.image_width_px, hardware.camera.image_height_px)
+        self._condition = Condition()
+        self._latest: FaceMeshInputFrame | None = None
+        self._published_version = 0
+        self._consumed_version = 0
+        self._closed = False
+
+    def publish_payload(self, payload: object) -> int:
+        if not isinstance(payload, dict):
+            raise ValueError("FaceMesh IPC payload must be a JSON object")
+        frame_index = payload.get("frame_index")
+        faces = payload.get("faces")
+        encoded_jpeg = payload.get("frame_jpeg_base64")
+        if isinstance(frame_index, bool) or not isinstance(frame_index, int) or frame_index < 0:
+            raise ValueError("FaceMesh IPC payload has an invalid frame_index")
+        if not isinstance(faces, list):
+            raise ValueError("FaceMesh IPC payload must contain a faces list")
+        if not isinstance(encoded_jpeg, str):
+            raise ValueError("FaceMesh IPC payload must contain frame_jpeg_base64")
+        observations = tuple(
+            _parse_replay_face(face, frame_index=frame_index, face_index=face_index)
+            for face_index, face in enumerate(faces)
+        )
+        frame = self._decode_frame(encoded_jpeg)
+        with self._condition:
+            if self._closed:
+                raise RuntimeError("FaceMesh IPC input is closed")
+            self._latest = FaceMeshInputFrame(
+                frame_bgr=frame,
+                faces=observations,
+                label="FaceMesh IPC",
+                frame_index=frame_index,
+            )
+            self._published_version += 1
+            self._condition.notify_all()
+            return self._published_version
+
+    def _decode_frame(self, encoded_jpeg: str) -> np.ndarray:
+        try:
+            encoded = base64.b64decode(encoded_jpeg, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("FaceMesh IPC frame_jpeg_base64 is invalid") from exc
+        frame = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            raise ValueError("FaceMesh IPC frame is not a decodable JPEG")
+        size = (frame.shape[1], frame.shape[0])
+        if size != self._expected_size:
+            raise ValueError(
+                "FaceMesh IPC frame dimensions must match the intrinsics "
+                f"({size[0]}x{size[1]} != {self._expected_size[0]}x{self._expected_size[1]})"
+            )
+        return frame
+
+    def next_frame(self) -> FaceMeshInputFrame:
+        deadline = time.monotonic() + 3.0
+        with self._condition:
+            while not self._closed and (
+                self._latest is None or self._published_version == self._consumed_version
+            ):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    raise TimeoutError("waiting for a FaceMesh IPC frame timed out")
+                self._condition.wait(remaining)
+            if self._closed:
+                raise RuntimeError("FaceMesh IPC input is closed")
+            assert self._latest is not None
+            self._consumed_version = self._published_version
+            return self._latest
+
+    def close(self) -> None:
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
+
+
 class _LiveFaceMeshInput:
     """Live implementation of the same frame-source port, kept behind optional imports."""
 
@@ -504,3 +591,12 @@ class FaceMeshReplayProvider(FaceMeshPoseProvider):
                 hardware, landmarks_path=landmarks_path, video_path=video_path
             ),
         )
+
+
+class FaceMeshIpcProvider(FaceMeshPoseProvider):
+    """Compose the metric pose path with a producer-driven local IPC input port."""
+
+    def __init__(
+        self, hardware: HardwareProfile, user: UserProfile, *, frame_source: IpcFaceMeshInput
+    ) -> None:
+        super().__init__(hardware, user, source="ipc", frame_source=frame_source)
