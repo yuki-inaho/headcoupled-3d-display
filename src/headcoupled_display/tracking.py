@@ -76,7 +76,10 @@ class FaceMeshInputFrame:
     transport. A recording is therefore a deterministic test double for a live source.
     """
 
-    frame_bgr: np.ndarray
+    #: ``None`` when the producer already compressed the preview itself. Holding a
+    #: decoded frame on the display machine only to draw on it and re-encode it is the
+    #: cost this input port exists to avoid, so the pixels are simply not carried.
+    frame_bgr: np.ndarray | None
     faces: tuple[FaceMeshObservation, ...]
     label: str
     frame_index: int | None = None
@@ -510,7 +513,7 @@ class FaceMeshPoseProvider:
         self._frame_source.close()
 
     def _measurement_from_landmarks(
-        self, landmarks: np.ndarray, confidence: float, face_count: int, frame: np.ndarray
+        self, landmarks: np.ndarray, confidence: float, face_count: int, frame: np.ndarray | None
     ) -> _PoseMeasurement:
         left, right, eye, forward = self._estimator.estimate(landmarks)
         movement = float(np.linalg.norm(eye - self._last_eye))
@@ -541,7 +544,11 @@ class FaceMeshPoseProvider:
         )
 
     @staticmethod
-    def _draw_landmarks(frame: np.ndarray, landmarks_xy: np.ndarray) -> None:
+    def _draw_landmarks(frame: np.ndarray | None, landmarks_xy: np.ndarray) -> None:
+        if frame is None:
+            # The producer draws its own overlay before compressing; there are no pixels
+            # here to draw on, and materialising some would defeat the point.
+            return
         for point in landmarks_xy[::8, :2]:
             cv2.circle(frame, tuple(np.rint(point).astype(int)), 1, (90, 220, 170), -1)
 
@@ -588,8 +595,15 @@ class FaceMeshPoseProvider:
         return self._fps_ema
 
     def _encode_preview(
-        self, frame: np.ndarray, measurement: _PoseMeasurement, label: str
+        self, frame: np.ndarray | None, measurement: _PoseMeasurement, label: str
     ) -> bytes:
+        if frame is None:
+            # No silent placeholder: an input that carries neither pixels nor a
+            # producer-compressed preview is a configuration error, not a blank frame.
+            raise RuntimeError(
+                "this frame source supplied neither frame_bgr nor preview_jpeg; "
+                "there is nothing to send on /ws/camera"
+            )
         cv2.putText(
             frame,
             f"{label} {self._fps_ema:.1f} fps / {measurement.confidence:.2f}",
