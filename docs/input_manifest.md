@@ -21,8 +21,8 @@
 | :--- | :--- | :--- |
 | `$HEADCOUPLED_RECORDING`（実利用者の録画。撮影者が写るためリポジトリには含めず、パスも記載しない） | 段階別レイテンシ、精度スイープ、録画E2E | 1280×720、**実デコード294フレーム**。ヘッダは 602 frame / 60 fps と申告するが信用しない |
 | `$HEADCOUPLED_LANDMARKS`（同じ録画から生成した保存済みlandmarks） | 保存済みlandmarks replay | 同じ録画の478点×294フレーム |
-| `/home/inaho-omen/Project/facemesh_tracking/recordings/me/shape.pcd` | 個人用478点メッシュ | **生体情報**。`.gitignore` 対象であり、リポジトリへ入れない |
-| `/home/inaho-omen/Project/apriltag-camera-calibrator/artifacts/eval_refine/calibration.json` | カメラ内部パラメータ `K, D` | 1280×720、RMS 1.0429 px。録画時 focus 332 / 較正時 focus 256 の不一致が残る |
+| `$FACEMESH_TRACKING_PROJECT/recordings/me/shape.pcd` | 個人用478点メッシュ | **生体情報**。`.gitignore` 対象であり、リポジトリへ入れない |
+| `$HEADCOUPLED_TAGCAL_CALIBRATION` | カメラ内部パラメータ `K, D` | 1280×720、RMS 1.0429 px。録画時 focus 332 / 較正時 focus 256 の不一致が残る |
 
 これらは `docs/performance_results.md` の各計測エントリから参照されます。個人用メッシュは
 生体情報なので、成果物にも計測結果にも実体を含めず、パスと用途だけを記録します。
@@ -37,7 +37,7 @@
 
 | 項目 | 値 |
 | :--- | :--- |
-| 入力ファイル（リポジトリには追加せず、読み取り専用で参照のみ） | `/home/inaho-omen/open3d_data/extract/BunnyMesh/BunnyMesh.ply` |
+| 入力ファイル（リポジトリには追加せず、読み取り専用で参照のみ） | `<Open3D の BunnyMesh データセット>/BunnyMesh.ply` |
 | 入力ファイル SHA-256 | `b1acc63bece78444aa2e15bdcc72371a201279b98c6f5d4b74c993d02f0566fe` |
 | 頂点数／三角形数 | 35,947 頂点／69,451 三角形 |
 | 形式 | ASCII PLY、`comment zipper output`、プロパティ `x y z confidence intensity` |

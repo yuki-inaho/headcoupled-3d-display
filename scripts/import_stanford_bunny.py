@@ -14,11 +14,13 @@ Stanford 3D Scanning Repository (http://graphics.stanford.edu/data/3Dscanrep/),
 Graphics Laboratory, Scanner = Cyberware 3030 MS, 10 range scans, "zipper"
 reconstruction, 35947 vertices / 69451 triangles, "contains 5 holes in the
 bottom" (the physical model's base, where it stood on the scanner turntable).
-The default ``--input`` below is the local copy Open3D bundles as its
-"BunnyMesh" example dataset -- confirmed to be this exact reconstruction
-because its header reports the same vertex/triangle counts as the repository
-listing (35947 / 69451) and ``comment zipper output``. That file is read-only
-input here and is never modified or copied into this repository.
+The input is a local copy of that mesh -- Open3D bundles one as its "BunnyMesh"
+example dataset. The copy used here was confirmed to be this exact
+reconstruction because its header reports the same vertex/triangle counts as
+the repository listing (35947 / 69451) and ``comment zipper output``. Point
+``BUNNY_PLY`` at it, or pass ``--input``; the path is not hard-coded because it
+differs per machine. That file is read-only input and is never modified or
+copied into this repository.
 
 Usage terms for this data (quoted from the repository page, verified by
 fetching it directly on 2026-08-17; full quote also recorded in
@@ -78,12 +80,15 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
 
-DEFAULT_INPUT = Path("/home/inaho-omen/open3d_data/extract/BunnyMesh/BunnyMesh.ply")
+#: Open3D bundles this mesh as its "BunnyMesh" example dataset. The path differs per
+#: machine, so it comes from BUNNY_PLY rather than being hard-coded to one home directory.
+DEFAULT_INPUT = Path(os.getenv("BUNNY_PLY", ""))
 DEFAULT_OUTPUT = Path("src/headcoupled_display/static/assets/bunny.pcd")
 
 # Reused verbatim from the retired scripts/generate_bunny.py "fur" colour -- see the
@@ -240,7 +245,7 @@ def write_ascii_pcd(
     points: np.ndarray,
     colors: np.ndarray,
     *,
-    source_path: Path,
+    source_name: str,
     source_sha256: str,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -257,9 +262,11 @@ def write_ascii_pcd(
 # Usage terms (Stanford 3D Scanning Repository, quoted in full in
 # docs/input_manifest.md): research use and free mirroring/redistribution
 # permitted with attribution; commercial use requires Stanford's permission.
-# Source file: {source_path}
+# Source file name: {source_name}   (SHA-256 below identifies it; the full local
+# path is deliberately not recorded here, it differs per machine)
 # Source SHA-256: {source_sha256}
-# Orientation: rotated 180 deg about Y so the head faces the observer (+Z).
+# Orientation: the source orientation, unrotated. See the script docstring for why
+# the half turn this used to apply was wrong.
 # Colour: rainbow ramp over height; the source PLY has no RGB, see script docstring.
 VERSION 0.7
 FIELDS x y z r g b
@@ -340,7 +347,7 @@ def main() -> None:
         args.output,
         points,
         colors,
-        source_path=args.input,
+        source_name=args.input.name,
         source_sha256=source_sha256,
     )
     summarize_written_pcd(args.output)

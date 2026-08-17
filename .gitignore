@@ -37,3 +37,17 @@ temp/
 .serena/
 .DS_Store
 Thumbs.db
+
+# Working documents are never published. They quote the operator, name local paths,
+# and record intermediate findings that are wrong on purpose (superseded hypotheses).
+# temp/ is already excluded above; these cover the other places such notes land.
+diary/
+workdocs/
+notes/
+scratch/
+**/workdoc_*.md
+**/作業*.md
+
+# Raw capture from the operator's own machine. Only the converted, reviewed demo
+# under docs/assets/ is tracked.
+*.mov

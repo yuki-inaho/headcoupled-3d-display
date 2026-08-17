@@ -61,7 +61,7 @@ bunny:
 # Regenerate the shipped bunny.pcd from the real Stanford Bunny PLY (bun_zipper,
 # 35947 vertices). The default `input` matches import_stanford_bunny.py's own
 # DEFAULT_INPUT; pass a different path if that local copy lives elsewhere.
-bunny-stanford input="/home/inaho-omen/open3d_data/extract/BunnyMesh/BunnyMesh.ply":
+bunny-stanford input=env_var_or_default("BUNNY_PLY", ""):
     {{python}} scripts/import_stanford_bunny.py --input "{{input}}" --output src/headcoupled_display/static/assets/bunny.pcd
 
 # Unit and API tests. recorded_cuda is excluded as well as e2e: it needs a CUDA GPU,

@@ -49,7 +49,7 @@ uv run headcoupled import-tagcal \
 `/dev/video0` をパスとして渡します。
 
 ```bash
-cd ~/Project/facemesh_tracking
+cd "$FACEMESH_TRACKING_PROJECT"
 just cam /dev/video0
 # または headcoupled-3d-display から: just facemesh-live /dev/video0
 ```
@@ -58,8 +58,8 @@ just cam /dev/video0
 （CloudCompare/MeshLabなど）、`shape.pcd`はheadcoupledの個人眼位置プロファイル用です。
 
 ```bash
-~/Project/facemesh_tracking/recordings/me/shape.ply
-~/Project/facemesh_tracking/recordings/me/shape.pcd
+$FACEMESH_TRACKING_PROJECT/recordings/me/shape.ply
+$FACEMESH_TRACKING_PROJECT/recordings/me/shape.pcd
 ```
 
 事前診断:

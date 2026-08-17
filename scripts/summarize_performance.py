@@ -2,7 +2,7 @@
 
 Run this with this repository's own Python 3.13 environment::
 
-    PYTHONPATH=/home/inaho-omen/Project/headcoupled-3d-display/src \\
+    PYTHONPATH=<this repo>/src \\
       .venv/bin/python scripts/summarize_performance.py \\
       --raw artifacts/perf/baseline_recorded_raw.json \\
       --command "..." \\

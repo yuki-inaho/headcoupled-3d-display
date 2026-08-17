@@ -2,11 +2,11 @@
 
 Run this with the ``facemesh_tracking`` Python 3.10 / CUDA environment, e.g.::
 
-    cd /home/inaho-omen/Project/facemesh_tracking
-    PYTHONPATH=/home/inaho-omen/Project/headcoupled-3d-display \\
-      uv run python /home/inaho-omen/Project/headcoupled-3d-display/scripts/benchmark_recorded.py \\
+    cd "$FACEMESH_TRACKING_PROJECT"
+    PYTHONPATH=<this repo> \\
+      uv run python <this repo>/scripts/benchmark_recorded.py \\
       --video "$HEADCOUPLED_RECORDING" \\
-      --output /home/inaho-omen/Project/headcoupled-3d-display/artifacts/perf/baseline_recorded_raw.json
+      --output <this repo>/artifacts/perf/baseline_recorded_raw.json
 
 This script deliberately targets Python 3.10 syntax (no ``datetime.UTC``, no
 ``tomllib``): it imports only the standard library, numpy, cv2, and

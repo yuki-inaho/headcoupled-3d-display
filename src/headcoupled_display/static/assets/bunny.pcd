@@ -10,9 +10,11 @@
 # Usage terms (Stanford 3D Scanning Repository, quoted in full in
 # docs/input_manifest.md): research use and free mirroring/redistribution
 # permitted with attribution; commercial use requires Stanford's permission.
-# Source file: /home/inaho-omen/open3d_data/extract/BunnyMesh/BunnyMesh.ply
+# Source file name: BunnyMesh.ply   (SHA-256 below identifies it; the full local
+# path is deliberately not recorded here, it differs per machine)
 # Source SHA-256: b1acc63bece78444aa2e15bdcc72371a201279b98c6f5d4b74c993d02f0566fe
-# Orientation: rotated 180 deg about Y so the head faces the observer (+Z).
+# Orientation: the source orientation, unrotated. See the script docstring for why
+# the half turn this used to apply was wrong.
 # Colour: rainbow ramp over height; the source PLY has no RGB, see script docstring.
 VERSION 0.7
 FIELDS x y z r g b
