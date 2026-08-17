@@ -894,3 +894,97 @@ def test_browser_draw_latency_stays_within_a_frame() -> None:
         + "\n",
         encoding="utf-8",
     )
+
+
+@pytest.mark.e2e
+def test_the_scene_actually_reaches_the_drawing_buffer() -> None:
+    """Read the WebGL drawing buffer and assert the scene is really in it.
+
+    A Playwright screenshot is not adequate evidence here: under headless SwiftShader the
+    captured PNG shows only the CSS layer, so a completely blank renderer would produce a
+    screenshot indistinguishable from a working one. The footer reading
+    "WebGL2 / 13,810 points" is not evidence either -- it reports what was uploaded, not
+    what was drawn. readPixels is the only check that fails when nothing is drawn.
+    """
+    port = free_port()
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYTHONPATH": str(ROOT / "src"),
+            "HEADCOUPLED_PROFILE": str(ROOT / "config" / "hardware_profile.demo.json"),
+            "HEADCOUPLED_SCENE": str(ROOT / "config" / "scene_profile.default.json"),
+            "HEADCOUPLED_SOURCE": "synthetic",
+        }
+    )
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "headcoupled_display.api:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--log-level",
+            "warning",
+        ],
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        wait_for_server(f"{base_url}/api/health", process)
+        with allow_localhost_for_managed_chromium(), sync_playwright() as playwright:
+            browser = playwright.chromium.launch(
+                headless=True,
+                executable_path=os.getenv("HEADCOUPLED_CHROMIUM") or None,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--enable-webgl",
+                    "--ignore-gpu-blocklist",
+                    "--use-angle=swiftshader",
+                ],
+            )
+            page = browser.new_page()
+            page.goto(base_url, wait_until="domcontentloaded")
+            page.wait_for_function("() => document.body.dataset.ready === 'true'", timeout=20000)
+            page.wait_for_function(
+                "() => Number(document.querySelector('#gl-canvas').dataset.drawCount) > 3",
+                timeout=20000,
+            )
+            pixels = page.evaluate(
+                """() => {
+                    const canvas = document.querySelector('#gl-canvas');
+                    const gl = canvas.getContext('webgl2');
+                    const buffer = new Uint8Array(canvas.width * canvas.height * 4);
+                    gl.readPixels(0, 0, canvas.width, canvas.height,
+                                  gl.RGBA, gl.UNSIGNED_BYTE, buffer);
+                    const counts = new Map();
+                    for (let i = 0; i < buffer.length; i += 4) {
+                        const key = `${buffer[i]},${buffer[i + 1]},${buffer[i + 2]}`;
+                        counts.set(key, (counts.get(key) || 0) + 1);
+                    }
+                    return {
+                        total: canvas.width * canvas.height,
+                        distinct: counts.size,
+                        counts: Object.fromEntries(counts),
+                    };
+                }"""
+            )
+            browser.close()
+    finally:
+        terminate_child(process)
+
+    # pcd.js falls back to [0.80, 0.85, 0.92] when a PCD carries no colours, which is
+    # 204,216,232 after the 8-bit round trip. bunny.pcd has no colour fields, so every
+    # drawn point lands on exactly this value.
+    point_pixels = pixels["counts"].get("204,216,232", 0)
+    assert point_pixels > 1000, f"point cloud is not in the drawing buffer: {point_pixels} px"
+
+    # A blank buffer would be a single colour. The reference geometry adds several more.
+    assert pixels["distinct"] >= 4, pixels["distinct"]
