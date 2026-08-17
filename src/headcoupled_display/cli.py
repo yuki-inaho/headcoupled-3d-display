@@ -10,7 +10,7 @@ import typer
 import uvicorn
 
 from .api import create_app, default_hardware_profile_path
-from .models import HardwareProfile
+from .models import HardwareProfile, TrackingSource
 from .profiles import load_tagcal_calibration, profile_with_resolved_matrix, summarize_profile
 from .synthetic import run_synthetic_calibration
 
@@ -23,13 +23,32 @@ def serve(
     port: Annotated[int, typer.Option(min=1, max=65535)] = 8000,
     profile: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
     user_profile: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
-    source: Annotated[Literal["synthetic", "facemesh"], typer.Option()] = "synthetic",
+    source: Annotated[TrackingSource, typer.Option()] = "synthetic",
     camera_device: Annotated[
         str, typer.Option(help="V4L2 device path (use /dev/video0 on this machine)")
     ] = "/dev/video0",
     backend: Annotated[Literal["cpu", "cuda", "tensorrt"], typer.Option()] = "cpu",
+    replay_landmarks: Annotated[
+        Path | None, typer.Option(exists=True, dir_okay=False, help="FaceMesh --save-json output")
+    ] = None,
+    replay_video: Annotated[
+        Path | None, typer.Option(exists=True, dir_okay=False, help="Video used for that JSON")
+    ] = None,
+    face_model: Annotated[
+        Path | None, typer.Option(exists=True, dir_okay=False, help="Personal 478-point shape.pcd")
+    ] = None,
+    intrinsics: Annotated[
+        Path | None, typer.Option(exists=True, dir_okay=False, help="tagcal calibration.json/YAML")
+    ] = None,
 ) -> None:
-    """Serve the dashboard and real-time streams."""
+    """Serve the dashboard, with live FaceMesh or a recorded FaceMesh replay."""
+
+    if source == "replay" and any(
+        value is None for value in (replay_landmarks, replay_video, face_model, intrinsics)
+    ):
+        raise typer.BadParameter(
+            "replay requires --replay-landmarks, --replay-video, --face-model, and --intrinsics"
+        )
 
     application = create_app(
         profile_path=profile or default_hardware_profile_path(),
@@ -37,6 +56,10 @@ def serve(
         source=source,
         camera_device=camera_device,
         backend=backend,
+        replay_landmarks_path=replay_landmarks,
+        replay_video_path=replay_video,
+        face_model_path=face_model,
+        intrinsics_path=intrinsics,
     )
     uvicorn.run(application, host=host, port=port, log_level="info")
 
@@ -66,7 +89,9 @@ def profile_summary(
 def import_tagcal(
     calibration: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
     profile: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
-    output: Annotated[Path, typer.Option(dir_okay=False)] = Path("config/hardware_profile.measured.json"),
+    output: Annotated[Path, typer.Option(dir_okay=False)] = Path(
+        "config/hardware_profile.measured.json"
+    ),
 ) -> None:
     """Merge tagcal camera intrinsics into an existing hardware profile."""
 

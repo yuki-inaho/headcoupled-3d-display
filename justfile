@@ -25,6 +25,11 @@ serve host="127.0.0.1" port="8000":
 facemesh-live device="/dev/video0":
     cd {{facemesh_project}} && just cam {{device}}
 
+# Replay a recorded FaceMesh result in the browser dashboard. All four inputs must come
+# from the same camera session: the video, its saved landmarks, the personal shape, and K,D.
+replay-recording landmarks video face_model intrinsics host="127.0.0.1" port="8000":
+    PYTHONPATH={{root}}/src {{python}} -m headcoupled_display.cli serve --host {{host}} --port {{port}} --profile {{profile}} --source replay --replay-landmarks "{{landmarks}}" --replay-video "{{video}}" --face-model "{{face_model}}" --intrinsics "{{intrinsics}}"
+
 # Validate and summarize a hardware profile.
 profile-summary path=profile:
     PYTHONPATH={{root}}/src {{python}} -m headcoupled_display.cli profile-summary {{path}}

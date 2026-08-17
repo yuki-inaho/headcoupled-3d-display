@@ -10,6 +10,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Vector3 = tuple[float, float, float]
+TrackingSource = Literal["synthetic", "facemesh", "replay"]
 Matrix4 = tuple[
     tuple[float, float, float, float],
     tuple[float, float, float, float],
@@ -168,7 +169,7 @@ class MountSummary(StrictModel):
 class TrackingState(StrictModel):
     sequence: int = Field(ge=0)
     timestamp_unix_s: float
-    source: Literal["synthetic", "facemesh"]
+    source: TrackingSource
     confidence: float = Field(ge=0.0, le=1.0)
     cyclopean_eye_display_m: Vector3
     left_eye_display_m: Vector3

@@ -59,7 +59,12 @@ function connectPose() {
     setText("stability", pose.stable ? "安定" : "移動中");
     const [x, y, z] = pose.cyclopean_eye_display_m;
     setText("eye-position", `${format(x, 3)}, ${format(y, 3)}, ${format(z, 3)} m`);
-    statusChip(pose.confidence >= 0.75 ? "ok" : "warn", pose.source === "synthetic" ? "合成追跡" : "顔追跡");
+    const sourceLabel = {
+      synthetic: "合成追跡",
+      facemesh: "顔追跡（ライブ）",
+      replay: "顔追跡（録画再生）",
+    }[pose.source] || "追跡入力";
+    statusChip(pose.confidence >= 0.75 ? "ok" : "warn", sourceLabel);
   });
   socket.addEventListener("close", () => {
     statusChip("warn", "再接続中");

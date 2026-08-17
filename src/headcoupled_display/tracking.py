@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -15,7 +16,7 @@ import numpy as np
 
 from .face_model import HEAD_TO_OPENCV, FaceModel, canonical_face_model, load_personal_face_model
 from .geometry import normalize
-from .models import HardwareProfile, TrackingState, UserProfile
+from .models import HardwareProfile, TrackingSource, TrackingState, UserProfile
 from .profiles import resolved_camera_to_display
 
 
@@ -30,14 +31,14 @@ class FaceMeshUnavailableError(RuntimeError):
     pass
 
 
-class _FaceObservation(Protocol):
+class _LiveFaceObservation(Protocol):
     score: float
     xy: np.ndarray
     points: np.ndarray
 
 
 class _FaceMeshResult(Protocol):
-    faces: Sequence[_FaceObservation]
+    faces: Sequence[_LiveFaceObservation]
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,41 @@ class _PoseMeasurement:
     movement_m: float
 
 
+@dataclass(frozen=True)
+class FaceMeshObservation:
+    score: float
+    landmarks_xy: np.ndarray
+
+
+@dataclass(frozen=True)
+class _RecordedFrame:
+    frame_index: int
+    faces: tuple[FaceMeshObservation, ...]
+
+
+@dataclass(frozen=True)
+class FaceMeshInputFrame:
+    """One BGR frame already paired with its FaceMesh observations.
+
+    The pose/WebSocket code owns this contract, not the camera, JSON, or future IPC
+    transport. A recording is therefore a deterministic test double for a live source.
+    """
+
+    frame_bgr: np.ndarray
+    faces: tuple[FaceMeshObservation, ...]
+    label: str
+    frame_index: int | None = None
+
+
+@runtime_checkable
+class FaceMeshFrameSource(Protocol):
+    """Port for a live, recorded, or IPC-provided sequence of FaceMesh frames."""
+
+    def next_frame(self) -> FaceMeshInputFrame: ...
+
+    def close(self) -> None: ...
+
+
 class HeadPoseEstimator:
     """Solve a metric dense-landmark PnP pose and derive pupil positions.
 
@@ -59,9 +95,7 @@ class HeadPoseEstimator:
     numerically successful mirrored solution cannot put the face behind the camera.
     """
 
-    LANDMARK_INDICES = np.array(
-        [1, 6, 33, 133, 362, 263, 61, 291, 199, 168, 94, 4], dtype=np.int32
-    )
+    LANDMARK_INDICES = np.array([1, 6, 33, 133, 362, 263, 61, 291, 199, 168, 94, 4], dtype=np.int32)
 
     def __init__(self, hardware: HardwareProfile, user: UserProfile) -> None:
         self.camera_matrix = np.asarray(hardware.camera.camera_matrix, dtype=np.float64)
@@ -96,7 +130,11 @@ class HeadPoseEstimator:
         landmarks_xy: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         landmarks = np.asarray(landmarks_xy, dtype=np.float64)
-        if landmarks.ndim != 2 or landmarks.shape[1] < 2 or len(landmarks) <= int(self.LANDMARK_INDICES.max()):
+        if (
+            landmarks.ndim != 2
+            or landmarks.shape[1] < 2
+            or len(landmarks) <= int(self.LANDMARK_INDICES.max())
+        ):
             raise ValueError("FaceMesh landmarks must contain the 468 base landmarks")
         image_points = np.ascontiguousarray(landmarks[self.LANDMARK_INDICES, :2])
         if not np.isfinite(image_points).all():
@@ -115,7 +153,9 @@ class HeadPoseEstimator:
 
         left_camera = rotation_camera_head @ self._left_eye_opencv_m + translation_camera_head
         right_camera = rotation_camera_head @ self._right_eye_opencv_m + translation_camera_head
-        cyclopean_camera = rotation_camera_head @ self._cyclopean_eye_opencv_m + translation_camera_head
+        cyclopean_camera = (
+            rotation_camera_head @ self._cyclopean_eye_opencv_m + translation_camera_head
+        )
         forward_camera = rotation_camera_head @ self._forward_axis_opencv
 
         left_display = self._display_rotation @ left_camera + self._display_translation
@@ -125,36 +165,143 @@ class HeadPoseEstimator:
         return left_display, right_display, cyclopean_display, forward_display
 
 
-class FaceMeshTrackingProvider:
-    """Adapter for the uploaded ``facemesh_tracking`` package.
+def _parse_replay_face(value: object, *, frame_index: int, face_index: int) -> FaceMeshObservation:
+    if not isinstance(value, dict):
+        raise ValueError(f"replay frame {frame_index}, face {face_index} must be an object")
+    try:
+        score = float(value["score"])
+        landmarks = np.asarray(value["landmarks"], dtype=np.float64)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"replay frame {frame_index}, face {face_index} is malformed") from exc
+    if not np.isfinite(score) or not 0.0 <= score <= 1.0:
+        raise ValueError(f"replay frame {frame_index}, face {face_index} has an invalid score")
+    if landmarks.ndim != 2 or landmarks.shape[0] < 468 or landmarks.shape[1] < 2:
+        raise ValueError(f"replay frame {frame_index}, face {face_index} lacks 468 image landmarks")
+    if not np.isfinite(landmarks[:, :2]).all():
+        raise ValueError(f"replay frame {frame_index}, face {face_index} has non-finite landmarks")
+    return FaceMeshObservation(score=score, landmarks_xy=np.ascontiguousarray(landmarks[:, :2]))
 
-    The uploaded project has a separate Python/CUDA constraint set. It can be installed in
-    the same environment where compatible, or its ``src`` directory can be supplied via
-    ``FACEMESH_TRACKING_SOURCE``. Synthetic mode remains the reproducible default.
+
+def _load_replay_frames(path: Path) -> tuple[_RecordedFrame, ...]:
+    """Load the stable JSON schema emitted by ``facemesh run --save-json``."""
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot load FaceMesh replay JSON {path}: {exc}") from exc
+    if not isinstance(data, list) or not data:
+        raise ValueError("FaceMesh replay JSON must be a non-empty frame list")
+    frames: list[_RecordedFrame] = []
+    for expected_index, value in enumerate(data):
+        if not isinstance(value, dict) or value.get("frame") != expected_index:
+            raise ValueError("FaceMesh replay frames must have contiguous zero-based frame indices")
+        faces = value.get("faces")
+        if not isinstance(faces, list):
+            raise ValueError(f"replay frame {expected_index} must contain a faces list")
+        frames.append(
+            _RecordedFrame(
+                frame_index=expected_index,
+                faces=tuple(
+                    _parse_replay_face(face, frame_index=expected_index, face_index=face_index)
+                    for face_index, face in enumerate(faces)
+                ),
+            )
+        )
+    return tuple(frames)
+
+
+def _open_replay_capture(
+    video_path: Path, hardware: HardwareProfile, expected_frames: int
+) -> cv2.VideoCapture:
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        raise RuntimeError(f"unable to open replay video {video_path}")
+    width = round(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = round(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if (width, height) != (hardware.camera.image_width_px, hardware.camera.image_height_px):
+        capture.release()
+        raise ValueError(
+            "replay video dimensions must match the intrinsics "
+            f"({width}x{height} != {hardware.camera.image_width_px}x{hardware.camera.image_height_px})"
+        )
+    decoded_frames = _count_decodable_frames(capture)
+    if decoded_frames != expected_frames:
+        capture.release()
+        raise ValueError(
+            "replay video has "
+            f"{decoded_frames} decodable frames but landmarks JSON has {expected_frames}"
+        )
+    return capture
+
+
+def _count_decodable_frames(capture: cv2.VideoCapture) -> int:
+    """Count decoded frames instead of trusting unreliable container frame metadata."""
+
+    count = 0
+    while capture.grab():
+        count += 1
+    capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    return count
+
+
+class RecordedFaceMeshInput:
+    """Video-backed implementation of :class:`FaceMeshFrameSource`.
+
+    It is intentionally a transport adapter: the exact JSON emitted by
+    ``facemesh run --save-json`` is replayed as if an upstream live service had emitted
+    those observations. It lets browser E2E tests exercise the production metric-PnP and
+    WebSocket path without importing the Python/CUDA inference environment.
     """
 
     def __init__(
-        self,
-        hardware: HardwareProfile,
-        user: UserProfile,
-        *,
-        camera_device: str = "/dev/video0",
-        backend: str = "cpu",
-        width: int = 1280,
-        height: int = 720,
+        self, hardware: HardwareProfile, *, landmarks_path: Path, video_path: Path
     ) -> None:
+        self._records = _load_replay_frames(landmarks_path)
+        self._capture = _open_replay_capture(video_path, hardware, len(self._records))
+        self._record_index = 0
+
+    def next_frame(self) -> FaceMeshInputFrame:
+        record = self._records[self._record_index]
+        frame = self._read_video_frame()
+        self._record_index = (self._record_index + 1) % len(self._records)
+        return FaceMeshInputFrame(
+            frame_bgr=frame,
+            faces=record.faces,
+            label="FaceMesh replay",
+            frame_index=record.frame_index,
+        )
+
+    def _read_video_frame(self) -> np.ndarray:
+        ok, frame = self._capture.read()
+        if ok:
+            return frame
+        self._capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        ok, frame = self._capture.read()
+        if not ok:
+            raise RuntimeError("replay video cannot be read")
+        return frame
+
+    def close(self) -> None:
+        self._capture.release()
+
+
+class _LiveFaceMeshInput:
+    """Live implementation of the same frame-source port, kept behind optional imports."""
+
+    def __init__(
+        self, *, camera_device: str, backend: str, width: int, height: int
+    ) -> None:  # pragma: no cover - hardware dependent
         source_path = os.getenv("FACEMESH_TRACKING_SOURCE")
         if source_path:
             sys.path.insert(0, str(Path(source_path).expanduser().resolve()))
         try:
             from facemesh_tracking.pipeline import FaceMeshPipeline
             from facemesh_tracking.runtime import Backend
-        except Exception as exc:  # pragma: no cover - optional GPU integration
+        except Exception as exc:
             raise FaceMeshUnavailableError(
-                "facemesh_tracking is unavailable. Use synthetic mode or install the "
-                "uploaded face tracking project and set FACEMESH_TRACKING_SOURCE to its src/."
+                "facemesh_tracking is unavailable. Use replay mode or install the "
+                "tracking project and set FACEMESH_TRACKING_SOURCE to its src/."
             ) from exc
-
         self._pipeline = FaceMeshPipeline.create(backend=Backend(backend))
         source = int(camera_device) if camera_device.isdecimal() else camera_device
         self._capture = cv2.VideoCapture(source)
@@ -162,40 +309,77 @@ class FaceMeshTrackingProvider:
         self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         if not self._capture.isOpened():
             raise RuntimeError(f"unable to open camera device {camera_device!r}")
+
+    def next_frame(self) -> FaceMeshInputFrame:  # pragma: no cover - hardware dependent
+        ok, frame = self._capture.read()
+        if not ok:
+            raise RuntimeError("camera frame capture failed")
+        result = self._pipeline.process(frame)
+        faces = tuple(
+            FaceMeshObservation(
+                score=float(face.score), landmarks_xy=np.ascontiguousarray(face.xy[:, :2])
+            )
+            for face in result.faces
+        )
+        return FaceMeshInputFrame(frame_bgr=frame, faces=faces, label="FaceMesh")
+
+    def close(self) -> None:  # pragma: no cover - hardware dependent
+        self._capture.release()
+
+
+class FaceMeshPoseProvider:
+    """Metric PnP/WebSocket provider over any :class:`FaceMeshFrameSource` input port."""
+
+    def __init__(
+        self,
+        hardware: HardwareProfile,
+        user: UserProfile,
+        *,
+        source: TrackingSource,
+        frame_source: FaceMeshFrameSource,
+    ) -> None:
+        self._source = source
+        self._frame_source = frame_source
         self._estimator = HeadPoseEstimator(hardware, user)
         self._sequence = 0
         self._last_timestamp = time.perf_counter()
         self._fps_ema = 0.0
         self._last_eye = np.array([0.0, 0.0, 0.65], dtype=np.float64)
 
-    def sample(self) -> tuple[TrackingState, bytes]:  # pragma: no cover - hardware dependent
+    def sample(self) -> tuple[TrackingState, bytes]:
         started = time.perf_counter()
-        ok, frame = self._capture.read()
-        if not ok:
-            raise RuntimeError("camera frame capture failed")
-        result = self._pipeline.process(frame)
-        measurement = self._measure_result(result, frame)
-        state = self._build_state(measurement, started)
-        return state, self._encode_preview(frame, measurement)
+        input_frame = self._frame_source.next_frame()
+        if input_frame.faces:
+            face = max(input_frame.faces, key=lambda value: value.score)
+            measurement = self._measurement_from_landmarks(
+                face.landmarks_xy, face.score, len(input_frame.faces), input_frame.frame_bgr
+            )
+        else:
+            measurement = self._fallback_measurement(0)
+        diagnostics = (
+            None if input_frame.frame_index is None else {"input_frame": input_frame.frame_index}
+        )
+        state = self._build_state(measurement, started, diagnostics=diagnostics)
+        return state, self._encode_preview(input_frame.frame_bgr, measurement, input_frame.label)
 
-    def _measure_result(
-        self, result: _FaceMeshResult, frame: np.ndarray
+    def close(self) -> None:
+        self._frame_source.close()
+
+    def _measurement_from_landmarks(
+        self, landmarks: np.ndarray, confidence: float, face_count: int, frame: np.ndarray
     ) -> _PoseMeasurement:
-        if not result.faces:
-            return self._fallback_measurement(len(result.faces))
-        face = max(result.faces, key=lambda value: value.score)
-        left, right, eye, forward = self._estimator.estimate(face.xy)
+        left, right, eye, forward = self._estimator.estimate(landmarks)
         movement = float(np.linalg.norm(eye - self._last_eye))
         self._last_eye = eye
-        self._draw_landmarks(frame, face.xy)
+        self._draw_landmarks(frame, landmarks)
         return _PoseMeasurement(
             left=left,
             right=right,
             cyclopean=eye,
             forward=forward,
-            confidence=float(face.score),
-            face_count=len(result.faces),
-            landmark_count=int(face.points.shape[0]),
+            confidence=confidence,
+            face_count=face_count,
+            landmark_count=int(landmarks.shape[0]),
             movement_m=movement,
         )
 
@@ -214,24 +398,31 @@ class FaceMeshTrackingProvider:
 
     @staticmethod
     def _draw_landmarks(frame: np.ndarray, landmarks_xy: np.ndarray) -> None:
-        for point in landmarks_xy[::8]:
+        for point in landmarks_xy[::8, :2]:
             cv2.circle(frame, tuple(np.rint(point).astype(int)), 1, (90, 220, 170), -1)
 
-    def _build_state(self, measurement: _PoseMeasurement, started: float) -> TrackingState:
+    def _build_state(
+        self,
+        measurement: _PoseMeasurement,
+        started: float,
+        *,
+        diagnostics: dict[str, object] | None = None,
+    ) -> TrackingState:
         now = time.perf_counter()
         self._fps_ema = self._smoothed_fps(now)
         self._sequence += 1
-        stable = measurement.movement_m < 0.004 and measurement.confidence >= 0.75
-        diagnostics: dict[str, object] = {"face_count": measurement.face_count}
+        state_diagnostics: dict[str, object] = {"face_count": measurement.face_count}
         if measurement.landmark_count:
-            diagnostics.update(
+            state_diagnostics.update(
                 landmark_count=measurement.landmark_count,
                 eye_movement_m=measurement.movement_m,
             )
+        if diagnostics is not None:
+            state_diagnostics.update(diagnostics)
         return TrackingState(
             sequence=self._sequence,
             timestamp_unix_s=time.time(),
-            source="facemesh",
+            source=self._source,
             confidence=measurement.confidence,
             cyclopean_eye_display_m=tuple(float(value) for value in measurement.cyclopean),
             left_eye_display_m=tuple(float(value) for value in measurement.left),
@@ -239,21 +430,25 @@ class FaceMeshTrackingProvider:
             head_forward_display=tuple(float(value) for value in measurement.forward),
             tracking_fps=self._fps_ema,
             inference_ms=(now - started) * 1000.0,
-            stable=stable,
-            diagnostics=diagnostics,
+            stable=measurement.movement_m < 0.004 and measurement.confidence >= 0.75,
+            diagnostics=state_diagnostics,
         )
 
     def _smoothed_fps(self, now: float) -> float:
         interval = max(now - self._last_timestamp, 1e-6)
         self._last_timestamp = now
         instant_fps = 1.0 / interval
-        self._fps_ema = instant_fps if self._fps_ema == 0.0 else 0.9 * self._fps_ema + 0.1 * instant_fps
+        self._fps_ema = (
+            instant_fps if self._fps_ema == 0.0 else 0.9 * self._fps_ema + 0.1 * instant_fps
+        )
         return self._fps_ema
 
-    def _encode_preview(self, frame: np.ndarray, measurement: _PoseMeasurement) -> bytes:
+    def _encode_preview(
+        self, frame: np.ndarray, measurement: _PoseMeasurement, label: str
+    ) -> bytes:
         cv2.putText(
             frame,
-            f"FaceMesh {self._fps_ema:.1f} fps / {measurement.confidence:.2f}",
+            f"{label} {self._fps_ema:.1f} fps / {measurement.confidence:.2f}",
             (16, 28),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.65,
@@ -266,5 +461,46 @@ class FaceMeshTrackingProvider:
             raise RuntimeError("failed to encode camera preview")
         return encoded.tobytes()
 
-    def close(self) -> None:  # pragma: no cover - hardware dependent
-        self._capture.release()
+
+class FaceMeshTrackingProvider(FaceMeshPoseProvider):
+    """Live composition of the shared pose provider and a camera-backed input port."""
+
+    def __init__(
+        self,
+        hardware: HardwareProfile,
+        user: UserProfile,
+        *,
+        camera_device: str = "/dev/video0",
+        backend: str = "cpu",
+        width: int = 1280,
+        height: int = 720,
+    ) -> None:
+        super().__init__(
+            hardware,
+            user,
+            source="facemesh",
+            frame_source=_LiveFaceMeshInput(
+                camera_device=camera_device, backend=backend, width=width, height=height
+            ),
+        )
+
+
+class FaceMeshReplayProvider(FaceMeshPoseProvider):
+    """Recorded-input composition of the same production metric-PnP provider."""
+
+    def __init__(
+        self,
+        hardware: HardwareProfile,
+        user: UserProfile,
+        *,
+        landmarks_path: Path,
+        video_path: Path,
+    ) -> None:
+        super().__init__(
+            hardware,
+            user,
+            source="replay",
+            frame_source=RecordedFaceMeshInput(
+                hardware, landmarks_path=landmarks_path, video_path=video_path
+            ),
+        )
