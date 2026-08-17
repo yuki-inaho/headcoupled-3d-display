@@ -206,8 +206,33 @@ PYTHONPATH=src .venv/bin/python -m headcoupled_display.cli profile-summary confi
 
 添付FaceMeshはPython 3.10、ONNX Runtime GPU 1.18、CUDA 11.8/cuDNN 8系の独立環境です。
 実カメラのリアルタイム確認は、その環境の `just cam /dev/video0`（または本リポジトリから
-`just facemesh-live /dev/video0`）で行います。二つのPython環境間の**ライブ**IPCブリッジは未実装のため、
-`--source facemesh` を実機のブラウザー起動手順として案内しません。
+`just facemesh-live /dev/video0`）で行います。
+
+二つのPython環境をまたぐIPCブリッジは実装済みです（上の「プロセス間入力の2レーン」参照）。
+表示側を `just serve-ipc <shape.pcd> <calibration.json>` で起動し、FaceMesh側で
+`just facemesh-ipc` を実行します。producer は録画とカメラを同じ `--source` で受け付けます。
+
+```bash
+# 認識側（Python 3.10 / CUDA）
+uv run python <このリポジトリ>/scripts/facemesh_ipc_producer.py \
+  --source /dev/video0 --backend cuda \
+  --endpoint http://127.0.0.1:8000/api/input/facemesh
+```
+
+**CUDA は固定です。** producer は起動時に detector と estimator の**実セッション**の
+provider を検査し、先頭が `CUDAExecutionProvider` でなければどちらの段が不成立かを含めて
+異常終了します。`facemesh_tracking` の provider リストは `["CUDAExecutionProvider",
+"CPUExecutionProvider"]` なので、CUDA が読めなくても ONNX Runtime は例外を出さず CPU へ
+落ちます。要求したリストではなく実セッションを見ないと、CPU 実行を成功として記録できて
+しまいます。**TensorRT は選べません** — `libnvinfer.so.10` が無い環境では TensorRT 指定が
+失敗せず CUDA へ暗黙 fallback するため、まさにこの producer が隠してはならない種類の
+fallback になります。
+
+`--detector-refresh-interval N` で時系列ROI（N フレームに一度だけ全検出し、間は前フレームの
+ランドマークから ROI を作って landmark 推論だけを行う）を有効にできますが、**既定は 1、
+つまり毎フレーム全検出です。** 実測した全 N で精度閾値（角度 p95 ≤ 1°）を満たせず、
+精度と遅延を同時に満たす N が存在しなかったためです。数値と理由は
+`docs/performance_results.md` にあります。
 
 一方、**録画済みの実映像**は、FaceMeshの結果JSONと映像を同じフレーム番号で再生する
 `replay` sourceでブラウザーへ通せます。これは二つのPython環境を混ぜずに、実映像 →
@@ -265,11 +290,35 @@ GET  /api/frame.jpg
 POST /api/calibration/synthetic
 POST /api/calibration/fit
 GET  /api/calibration/status
+POST /api/input/facemesh/control    application/octet-stream  固定146バイト
+POST /api/input/facemesh/preview    image/jpeg                640×360 の生バイト列
 WS   /ws/pose       TrackingState JSON
 WS   /ws/camera     JPEG binary frame
 ```
 
 OpenAPIは `/docs` で確認できます。
+
+### プロセス間入力の2レーン
+
+FaceMesh推論は Python 3.10 / CUDA の別プロセスで動きます。制御とプレビューは
+**独立した2レーン**で、通信方式は候補4つを同一条件で25回ずつ実測して選びました
+（`docs/performance_design.md` §5）。
+
+- **control**: 毎フレーム。固定146バイトのバイナリ（magic、version、12点(u,v) float32、
+  score、sequence、capture/inference の monotonic ns と Unix ns）。サーバーは最新1件だけを
+  保持し、バックログを積みません。
+- **preview**: 最大10 FPS。producer が認識後に 640×360 へ縮小し、オーバーレイを描いてから
+  **一度だけ**エンコードします。サーバーは**デコードも再エンコードもせず**、そのまま
+  `/ws/camera` へ流します。640×360 以外は 422 で拒否します（寸法は JPEG の SOF マーカーから
+  読むので、検査のためにデコードすることはありません）。
+
+**制御の12点は 1280×720 の画像座標のままです。**プレビューを縮小しても、landmark 座標も
+カメラ内部パラメータ `K` も縮小しません。プレビューと制御は別契約です。
+
+preview が来ていなくても、購読されていなくても、control 姿勢は進みます。逆に入力が
+0.5 秒を超えて途絶えると、最後の眼位置は保ったまま confidence 0.0 と
+`diagnostics.stale=true` を配信します。高い confidence の古い姿勢を送り続けると、
+死んだ入力が「完全に静止した観察者」として描画されてしまうためです。
 
 ## テスト
 
