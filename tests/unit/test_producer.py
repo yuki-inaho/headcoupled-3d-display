@@ -513,6 +513,95 @@ def test_temporal_roi_runner_identity_transform_reproduces_detector_box_exactly(
     assert np.allclose(roi.keypoints, det_keypoints)
 
 
+def test_temporal_roi_runner_rotates_keypoints_by_the_mesh_derived_roll_delta() -> None:
+    """A head roll that happens *between* the anchor and the current frame must show up
+    in the propagated keypoints' angle, not just the anchor's own (by-then-stale) angle
+    re-scaled -- this is the fix for DoD-6's residual angle error: uniface's
+    ``roi_from_box`` reads only ``atan2(keypoints[1] - keypoints[0])`` for the crop's
+    rotation (confirmed by reading ``uniface/landmark/facemesh.py`` lines 65-70), and the
+    old propagation only ever re-scaled the anchor's own angle, never updated it.
+
+    Both frames share the identical landmark bounding box (60,60)-(140,140) -- an
+    identity box-transform, isolating the rotation effect -- but frame 2's own iris
+    keypoints (468/473) trace a rolled eye line while frame 1's (the anchor) trace a
+    level one. The propagated keypoints must be the anchor's own detector keypoints
+    rotated by exactly that roll delta around their eye-line midpoint, not the anchor's
+    original (level) angle.
+    """
+    anchor_xy = _spread_xy(x0=60.0, x1=140.0, y0=60.0, y1=140.0)
+    anchor_xy[468] = (70.0, 100.0)
+    anchor_xy[473] = (130.0, 100.0)  # level eye line: angle 0
+    anchor_landmarks = _make_landmarks(anchor_xy)
+
+    rolled_xy = _spread_xy(x0=60.0, x1=140.0, y0=60.0, y1=140.0)
+    rolled_xy[468] = (75.0, 90.0)
+    rolled_xy[473] = (125.0, 110.0)  # rolled eye line: dx=50, dy=20
+    rolled_landmarks = _make_landmarks(rolled_xy)
+
+    det_keypoints = np.array(
+        [[65.0, 90.0], [135.0, 90.0], [100.0, 100.0], [75.0, 120.0], [125.0, 120.0]],
+        dtype=np.float32,
+    )
+    anchor_box = [BBox(x1=50, y1=50, x2=150, y2=150, score=0.95, keypoints=det_keypoints)]
+    detector = _RecordingFakeDetector([anchor_box])
+    estimator = _RecordingFakeEstimator(
+        [
+            [anchor_landmarks],  # frame 1: full detect, sets the anchor (level eye line)
+            [rolled_landmarks],  # frame 2: landmark-only, own output has a rolled eye line
+            [rolled_landmarks],  # frame 3: landmark-only; only its *received* ROI matters
+        ]
+    )
+    pipeline = _RecordingFakePipeline(detector, estimator)
+    runner = producer.TemporalRoiRunner(pipeline, detector_refresh_interval=10)
+
+    runner.process(_frame())  # frame 1
+    runner.process(_frame())  # frame 2: ROI built from frame 1's (level) anchor, unaffected
+    runner.process(_frame())  # frame 3: ROI built from frame 2's (rolled) own output
+
+    delta = np.arctan2(20.0, 50.0) - np.arctan2(0.0, 60.0)  # frame-2 mesh angle - anchor mesh angle
+    cos_d, sin_d = np.cos(delta), np.sin(delta)
+    rotation = np.array([[cos_d, -sin_d], [sin_d, cos_d]])
+    midpoint = det_keypoints[:2].mean(axis=0)
+    expected = (det_keypoints - midpoint) @ rotation.T + midpoint
+
+    roi = estimator.received_boxes[-1][0]
+    assert np.allclose(roi.keypoints, expected, atol=1e-3)
+    # Sanity: this must actually differ from the un-rotated anchor keypoints -- otherwise
+    # the test would pass vacuously even with the old (angle-blind) propagation.
+    assert not np.allclose(roi.keypoints[:2], det_keypoints[:2], atol=0.5)
+
+
+def test_temporal_roi_runner_468_point_anchor_mesh_falls_back_to_transform_only() -> None:
+    """If the anchor frame's *own* mesh lacked the iris points (468-point/V1_468 that
+    frame), there is no same-frame reference to compute a rotation delta against, so
+    propagation must fall back to the plain scale+offset transform on the detector's
+    keypoints -- unchanged from before the rotation fix. This is a distinct guard from
+    the current-frame check: the *anchor* frame is what lacks points here, and the
+    detector keypoints are present, so landmark-only mode must still work."""
+    det_keypoints = np.array(
+        [[60.0, 70.0], [140.0, 70.0], [100.0, 100.0], [70.0, 130.0], [130.0, 130.0]],
+        dtype=np.float32,
+    )
+    anchor_box = [BBox(x1=50, y1=45, x2=150, y2=155, score=0.95, keypoints=det_keypoints)]
+    detector = _RecordingFakeDetector([anchor_box])
+    anchor_468 = _make_landmarks(_spread_xy(x0=60.0, x1=140.0, y0=60.0, y1=140.0, count=468))
+    estimator = _RecordingFakeEstimator(
+        [
+            [anchor_468],  # frame 1: full detect, anchor's own mesh has no iris points
+            [_centered_landmarks()],  # frame 2: landmark-only, identical box -> identity transform
+        ]
+    )
+    pipeline = _RecordingFakePipeline(detector, estimator)
+    runner = producer.TemporalRoiRunner(pipeline, detector_refresh_interval=10)
+
+    runner.process(_frame())
+    runner.process(_frame())
+
+    roi = estimator.received_boxes[-1][0]
+    assert detector.call_count == 1  # landmark-only mode still worked, no forced refresh
+    assert np.allclose(roi.keypoints, det_keypoints)  # identity transform, no rotation applied
+
+
 def test_temporal_roi_runner_scaled_transform_scales_the_detector_box() -> None:
     """When the most recently available landmark box is exactly 2x the (still fixed)
     anchor's box (same top-left corner), the propagated ROI must be the anchor's

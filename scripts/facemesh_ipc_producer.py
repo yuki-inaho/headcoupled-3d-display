@@ -291,6 +291,11 @@ class TemporalRoiRunner:
         #: box; None until the first full detect. See the class docstring.
         self._anchor_det_box: Any | None = None
         self._anchor_landmark_box: tuple[float, float, float, float] | None = None
+        #: The anchor frame's own dense-mesh points at ROI_ALIGNMENT_LANDMARK_INDICES,
+        #: cached so ``_propagate_keypoints`` can bias-correct the detector's keypoints
+        #: against a same-frame reference. None if that frame's mesh lacked the iris
+        #: points (< 478 points). See ``_propagate_keypoints``.
+        self._anchor_mesh_keypoints: np.ndarray | None = None
 
     def process(self, frame: np.ndarray) -> Any:
         """Process one BGR frame, returning a ``FaceMeshResult``-shaped object."""
@@ -340,11 +345,17 @@ class TemporalRoiRunner:
         if face is None:
             self._anchor_det_box = None
             self._anchor_landmark_box = None
+            self._anchor_mesh_keypoints = None
             return
         self._anchor_det_box = face.bbox
         x1, y1 = face.points[:, :2].min(axis=0)
         x2, y2 = face.points[:, :2].max(axis=0)
         self._anchor_landmark_box = (float(x1), float(y1), float(x2), float(y2))
+        self._anchor_mesh_keypoints = (
+            face.points[list(ROI_ALIGNMENT_LANDMARK_INDICES), :2].astype(np.float32)
+            if face.points.shape[0] >= _MIN_POINTS_FOR_ROI_ALIGNMENT
+            else None
+        )
 
     def _landmark_to_anchor_transform(
         self, xy: np.ndarray
@@ -382,11 +393,38 @@ class TemporalRoiRunner:
     def _propagate_keypoints(
         self, transform: tuple[float, float, float, float], xy: np.ndarray
     ) -> np.ndarray | None:
-        """Map the anchor's detector keypoints through ``transform``, or -- if the
-        detector didn't provide any (``BBox.keypoints`` is None) -- fall back to
-        synthesizing them from the current frame's own landmarks at
-        ``ROI_ALIGNMENT_LANDMARK_INDICES``. None if that fallback is needed but ``xy``
-        lacks the iris points it requires (not a 478-point/V2_478 mesh).
+        """Build this frame's alignment keypoints -- the ROI rotation (roll) comes only
+        from ``atan2`` of ``keypoints[1] - keypoints[0]`` (see ``uniface.landmark.
+        facemesh.roi_from_box``), so only the *angle* of those two rows has to be right
+        for the current frame; their position only needs to be roughly right (nothing
+        downstream reads it), and their separation doesn't matter at all.
+
+        Three cases:
+
+        1. The detector gave anchor keypoints, and the anchor frame's own mesh had the
+           478-point iris landmarks: rotate the anchor's detector keypoints by the roll
+           the head has picked up *since* the anchor, instead of just re-scaling their
+           already-stale angle (what ``transform``-only propagation below does). That
+           delta is ``atan2(current mesh eye vector) - atan2(anchor mesh eye vector)``,
+           i.e. the anchor and current frame's own dense-mesh eye lines compared on the
+           same (mesh) basis -- so it isolates rotation without being confounded by the
+           detector's keypoints and the mesh's iris points disagreeing on *scale* (a
+           plain vector-difference "bias" correction was tried first and mixed vector
+           magnitude into the correction, which left angle error inconsistent across
+           refresh intervals; an angle-only delta does not have that problem). The
+           anchor's own detector-keypoint eye separation is preserved, only rotated, so
+           its position propagates the same way ``_map_anchor_box`` does (via
+           ``transform``) before the rotation is applied around their own midpoint. If
+           ``xy`` lacks the iris points (< 478), falls back to ``transform``-only.
+        2. The detector gave anchor keypoints but the anchor frame's own mesh didn't
+           have iris points (468-point mesh that frame): no same-frame reference to
+           compute a rotation delta against, so map through ``transform`` alone,
+           unchanged from before this fix.
+        3. The detector didn't provide keypoints (``BBox.keypoints`` is None): synthesize
+           them directly from the current frame's own landmarks at
+           ``ROI_ALIGNMENT_LANDMARK_INDICES`` -- already frame-current, so no propagation
+           or rotation correction is needed. None if ``xy`` lacks the iris points this
+           requires (not a 478-point/V2_478 mesh).
         """
         det_keypoints = self._anchor_det_box.keypoints
         if det_keypoints is not None:
@@ -394,6 +432,21 @@ class TemporalRoiRunner:
             mapped = np.empty_like(det_keypoints, dtype=np.float32)
             mapped[:, 0] = det_keypoints[:, 0] * scale_x + offset_x
             mapped[:, 1] = det_keypoints[:, 1] * scale_y + offset_y
+            if (
+                self._anchor_mesh_keypoints is not None
+                and xy.shape[0] >= _MIN_POINTS_FOR_ROI_ALIGNMENT
+            ):
+                anchor_dx, anchor_dy = (
+                    self._anchor_mesh_keypoints[1] - self._anchor_mesh_keypoints[0]
+                )
+                cur_dx, cur_dy = (
+                    xy[ROI_ALIGNMENT_LANDMARK_INDICES[1]] - xy[ROI_ALIGNMENT_LANDMARK_INDICES[0]]
+                )
+                delta = float(np.arctan2(cur_dy, cur_dx) - np.arctan2(anchor_dy, anchor_dx))
+                cos_d, sin_d = np.cos(delta), np.sin(delta)
+                rotation = np.array([[cos_d, -sin_d], [sin_d, cos_d]], dtype=np.float64)
+                midpoint = mapped[:2].mean(axis=0)
+                mapped = ((mapped - midpoint) @ rotation.T + midpoint).astype(np.float32)
             return mapped
         if xy.shape[0] < _MIN_POINTS_FOR_ROI_ALIGNMENT:
             return None
