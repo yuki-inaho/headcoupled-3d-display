@@ -110,13 +110,32 @@ pitch_error_deg       0.19253936527826632
 
 ## 4. 未検証のまま残る項目
 
-配布物の `docs/test_report.md` 8章の記載どおり、以下は実機接続が必要です。
+配布物の `docs/test_report.md` 8章の記載どおり、以下は実機接続が必要でした。
+2026-08-17 の作業（`temp/workdoc_Aug17-2026_headcoupled_scene_latency.md`）で
+一部が実測に置き換わったため、現状を分けて記します。
 
-- 実カメラ入力と FaceMesh 推論（`components/facemesh_tracking/`）
-- 実機 tagcal 内部較正
-- 実ディスプレイ上の 5点／9点 外部較正
-- 実利用者の眼球中心・IPD 較正
-- エンドツーエンド遅延・ジッタ
+### 4.1 実測で検証済みになった項目
+
+- **実機 tagcal 内部較正**: `apriltag-camera-calibrator/artifacts/eval_refine/calibration.json`
+  を使用。1280×720、`plumb_bob`、RMS 1.0429 px、fx/fy = 1150.77 / 1150.62、
+  cx/cy = 719.85 / 360.36。録画と解像度一致。
+- **実カメラ入力と FaceMesh 推論**: GTX 1070 / CUDA 11.8 / onnxruntime-gpu 1.18.0 で
+  静止画ベンチ mean 36.33 ms（detector 25.67 ms、FaceMesh 10.67 ms、27.5 FPS）。
+  実セッションの provider が `CUDAExecutionProvider` 先頭であることを検査で強制。
+- **実利用者の個人顔モデル**: `recordings/me/shape.pcd`（478点）が
+  `UserProfile.face_model_path` から解決され、虹彩中心 468/473 が眼位置に使われることを
+  実録画で確認。両眼中点は画面座標で約 `(0.005, 0.030, 0.547) m`。
+
+### 4.2 依然として未検証の項目
+
+- **実ディスプレイ上の 5点／9点 外部較正**: `config/hardware_profile.local.json` の設置値は
+  ユーザーの実機目視確認であり、頭部レイ較正による実測ではない。
+  `forward_offset_m = 0.0` も録画検証用の明示値である。
+- **エンドツーエンド遅延・ジッタ（motion-to-photon）**: 録画入力では
+  カメラ露光・キャプチャ時間を含められないため、実カメラでの受け入れが別途必要。
+- **絶対深度の正しさ**: 録画時の `focus_absolute` が 332、較正時が 256 で不一致。
+  相対運動と表示幾何の検証には使えるが、絶対距離の校正証拠にはしない。
+  tagcal の主点 cx = 719.85 が画像中心 640 から 80 px ずれている点も併せて再確認が必要。
 
 ## 5. 同梱コンポーネントについての注意
 
