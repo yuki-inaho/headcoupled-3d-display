@@ -226,26 +226,47 @@ def check_recognition_latency(report: dict[str, Any] | None) -> Check:
 
 
 def check_transport(transport: dict[str, Any] | None) -> Check:
+    """Judge the adopted transport on its WORST run, matching the benchmark's own gate.
+
+    ``scripts/benchmark_transports.py`` decides ``control_p95_le_2ms`` with
+    ``worst <= threshold``: one violating run fails the candidate. Judging the median
+    here instead would let a candidate the harness rejects be reported as a pass, which
+    is exactly the kind of quiet threshold relaxation this validator exists to prevent.
+    The worst value is therefore required, not optional.
+    """
+
     if transport is None:
         return _not_measured("成功条件7", "control_transport", "the transport comparison result")
-    p95 = float(transport.get("control_p95_ms", float("inf")))
+    if "control_p95_worst_ms" not in transport:
+        return _not_measured(
+            "成功条件7",
+            "control_transport",
+            "control_p95_worst_ms (the median alone cannot decide a worst-run criterion)",
+        )
+    worst_p95 = float(transport["control_p95_worst_ms"])
+    median_p95 = float(transport.get("control_p95_median_ms", float("nan")))
     catch_up = int(transport.get("catch_up_frames", 10**6))
     reversals = int(transport.get("sequence_reversals", 10**6))
-    ok = p95 <= MAX_CONTROL_P95_MS and catch_up <= MAX_CATCH_UP_FRAMES and reversals == 0
+    ok = worst_p95 <= MAX_CONTROL_P95_MS and catch_up <= MAX_CATCH_UP_FRAMES and reversals == 0
     return Check(
         condition="成功条件7",
         name="control_transport",
         status=_verdict(ok),
         detail=(
-            f"control p95 {p95:.3f} ms <= {MAX_CONTROL_P95_MS}, "
+            f"worst-run control p95 {worst_p95:.3f} ms <= {MAX_CONTROL_P95_MS} "
+            f"(median {median_p95:.3f} ms, judged on the worst run as the benchmark does), "
             f"catch-up {catch_up} <= {MAX_CATCH_UP_FRAMES} frames, "
             f"sequence reversals {reversals} == 0"
         ),
         measured={
-            "control_p95_ms": p95,
+            "control_p95_worst_ms": worst_p95,
+            "control_p95_median_ms": median_p95,
+            "runs_meeting_p95": transport.get("runs_meeting_p95_2ms"),
+            "runs": transport.get("runs"),
             "catch_up_frames": catch_up,
             "sequence_reversals": reversals,
             "candidate": transport.get("candidate"),
+            "host_load_average": transport.get("host_load_average"),
         },
     )
 
@@ -325,19 +346,41 @@ def check_browser(browser: dict[str, Any] | None) -> Check:
 def check_end_to_end(end_to_end: dict[str, Any] | None) -> Check:
     if end_to_end is None:
         return _not_measured("成功条件10", "inference_to_webgl", "the end-to-end measurement")
+    if "clock_uncertainty_ms" not in end_to_end:
+        return _not_measured(
+            "成功条件10",
+            "inference_to_webgl",
+            "clock_uncertainty_ms for this run (a producer timestamp minus a browser one "
+            "spans two clocks; without measuring their offset the difference is unverified)",
+        )
+    clock_uncertainty = float(end_to_end["clock_uncertainty_ms"])
     median = float(end_to_end.get("median_ms", float("inf")))
     p95 = float(end_to_end.get("p95_ms", float("inf")))
-    ok = median <= MAX_END_TO_END_MEDIAN_MS and p95 <= MAX_END_TO_END_P95_MS
+    clock_ok = clock_uncertainty <= MAX_CLOCK_UNCERTAINTY_MS
+    ok = clock_ok and median <= MAX_END_TO_END_MEDIAN_MS and p95 <= MAX_END_TO_END_P95_MS
+    clock_note = (
+        f"browser-server clock uncertainty {clock_uncertainty:.3f} ms "
+        f"<= {MAX_CLOCK_UNCERTAINTY_MS} ms"
+        if clock_ok
+        else f"REJECTED: browser-server clock uncertainty {clock_uncertainty:.3f} ms "
+        f"exceeds {MAX_CLOCK_UNCERTAINTY_MS} ms, so this run's numbers are not trustworthy"
+    )
     return Check(
         condition="成功条件10",
         name="inference_to_webgl",
         status=_verdict(ok),
         detail=(
             f"median {median:.3f} ms <= {MAX_END_TO_END_MEDIAN_MS}, "
-            f"p95 {p95:.3f} ms <= {MAX_END_TO_END_P95_MS}; "
+            f"p95 {p95:.3f} ms <= {MAX_END_TO_END_P95_MS}; {clock_note}; "
             "camera exposure and capture time are NOT included"
         ),
-        measured={"median_ms": median, "p95_ms": p95},
+        measured={
+            "median_ms": median,
+            "p95_ms": p95,
+            "clock_uncertainty_ms": clock_uncertainty,
+            "clock_offset_ms": end_to_end.get("clock_offset_ms"),
+            "frame_interval_p50_ms": end_to_end.get("frame_interval_p50_ms"),
+        },
     )
 
 

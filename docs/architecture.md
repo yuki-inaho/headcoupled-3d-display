@@ -134,10 +134,15 @@ BGR frame
 実入力をブラウザーまでE2E検証するための境界です。
 
 実装上、PnP/WebSocket層は `FaceMeshFrameSource` という入力ポートだけを知ります。このポートの
-値は「BGRフレーム、FaceMesh観測列、入力フレーム番号」であり、`_LiveFaceMeshInput`（実カメラ）と
-`RecordedFaceMeshInput`（録画）が同じ契約を実装します。したがって録画は本番処理を迂回する偽の
-姿勢データではなく、カメラ/IPCの代わりに差し込める決定的な入力テストダブルです。将来のIPCは
-このポートを実装するだけで、metric PnP・個人メッシュ・WebSocket・ブラウザーを変更しません。
+値は「BGRフレーム（IPC経路では `None`）、FaceMesh観測列、入力フレーム番号、producerが圧縮した
+プレビュー、producer側の時刻」であり、`_LiveFaceMeshInput`（実カメラ）、
+`RecordedFaceMeshInput`（録画）、`IpcFaceMeshInput`（別プロセスのFaceMesh）が同じ契約を
+実装します。したがって録画は本番処理を迂回する偽の姿勢データではなく、カメラ/IPCの代わりに
+差し込める決定的な入力テストダブルです。
+
+**IPCは実装済みです**（§9 参照）。この設計どおり、IPCを足すのに metric PnP・個人メッシュ・
+WebSocket・ブラウザーの変更は不要でした。実際に変わったのは、プレビューをサーバーで
+再エンコードしなくなった点だけです。
 
 ## 6. 非対称投影
 

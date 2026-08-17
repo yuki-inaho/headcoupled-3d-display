@@ -156,6 +156,38 @@ def start_producer(base_url: str) -> subprocess.Popen[str]:
     )
 
 
+def measure_clock_offset(page: object) -> dict[str, float]:
+    """Measure the browser<->server Unix clock offset the NTP way, in the browser.
+
+    Success condition 10 subtracts a producer Unix timestamp from a browser one. Those
+    are two clocks; assuming they agree is the thing this measurement exists to stop.
+    The request is bracketed by two browser readings, so the offset is known to within
+    half the round trip, and that half-round-trip is reported as the uncertainty.
+    """
+
+    return page.evaluate(
+        """async () => {
+            const samples = [];
+            for (let i = 0; i < 5; i += 1) {
+                const before = performance.timeOrigin + performance.now();
+                const payload = await (await fetch('/api/health', {cache: 'no-store'})).json();
+                const after = performance.timeOrigin + performance.now();
+                samples.push({
+                    offsetMs: payload.server_unix_ns / 1e6 - (before + after) / 2,
+                    uncertaintyMs: (after - before) / 2,
+                });
+            }
+            samples.sort((a, b) => a.uncertaintyMs - b.uncertaintyMs);
+            const best = samples[0];
+            return {
+                offset_ms: best.offsetMs,
+                uncertainty_ms: best.uncertaintyMs,
+                samples: samples.length,
+            };
+        }"""
+    )
+
+
 @pytest.mark.recorded_cuda
 def test_recording_reaches_webgl_through_real_cuda_inference() -> None:
     require_prerequisites()
@@ -190,6 +222,7 @@ def test_recording_reaches_webgl_through_real_cuda_inference() -> None:
                 "() => (window.headcoupledTimingSummary()?.inferenceSampleCount ?? 0) >= 10",
                 timeout=60000,
             )
+            clock = measure_clock_offset(page)
             summary = page.evaluate("() => window.headcoupledTimingSummary()")
             canvas = page.locator("#gl-canvas")
             centre = json.loads(canvas.get_attribute("data-model-center-display-m"))
@@ -234,6 +267,9 @@ def test_recording_reaches_webgl_through_real_cuda_inference() -> None:
                 "source": runtime["source"],
                 "recording": str(RECORDING),
                 "producer_frames": PRODUCER_FRAMES,
+                "clock_offset_ms": clock["offset_ms"],
+                "clock_uncertainty_ms": clock["uncertainty_ms"],
+                "clock_domain": "unix_ns",
                 "excludes": "camera exposure and capture; this is a recording",
                 "environment": "headless chromium + swiftshader (not the physical display)",
             },

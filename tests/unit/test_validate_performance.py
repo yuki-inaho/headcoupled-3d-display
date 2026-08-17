@@ -105,11 +105,47 @@ def test_accuracy_uses_p95_not_mean() -> None:
 
 
 def test_transport_requires_all_three_properties() -> None:
-    good = {"control_p95_ms": 1.5, "catch_up_frames": 1, "sequence_reversals": 0}
+    good = {
+        "control_p95_worst_ms": 1.5,
+        "control_p95_median_ms": 1.0,
+        "catch_up_frames": 1,
+        "sequence_reversals": 0,
+    }
     assert check_transport(good).status == "pass"
-    assert check_transport({**good, "control_p95_ms": 2.5}).status == "fail"
+    assert check_transport({**good, "control_p95_worst_ms": 2.5}).status == "fail"
     assert check_transport({**good, "catch_up_frames": 3}).status == "fail"
     assert check_transport({**good, "sequence_reversals": 1}).status == "fail"
+
+
+def test_transport_is_judged_on_the_worst_run_not_the_median() -> None:
+    """The benchmark fails a candidate on one violating run; the validator must agree.
+
+    Judging the median instead would report a candidate the harness rejects as a pass.
+    """
+
+    median_would_pass = {
+        "control_p95_worst_ms": 4.233,
+        "control_p95_median_ms": 1.383,
+        "catch_up_frames": 2,
+        "sequence_reversals": 0,
+        "runs": 25,
+        "runs_meeting_p95_2ms": 18,
+    }
+    check = check_transport(median_would_pass)
+    assert check.status == "fail"
+    assert check.measured["control_p95_worst_ms"] == pytest.approx(4.233)
+    assert "worst run" in check.detail
+
+
+def test_transport_without_a_worst_run_value_is_not_measured() -> None:
+    """A median alone cannot decide a worst-run criterion, so it is not a pass."""
+
+    assert (
+        check_transport(
+            {"control_p95_median_ms": 1.383, "catch_up_frames": 2, "sequence_reversals": 0}
+        ).status
+        == "not_measured"
+    )
 
 
 def test_preview_rejects_a_full_resolution_or_re_encoded_lane() -> None:
@@ -121,9 +157,21 @@ def test_preview_rejects_a_full_resolution_or_re_encoded_lane() -> None:
 
 
 def test_end_to_end_states_that_camera_exposure_is_excluded() -> None:
-    check = check_end_to_end({"median_ms": 30.0, "p95_ms": 55.0})
+    check = check_end_to_end({"median_ms": 30.0, "p95_ms": 55.0, "clock_uncertainty_ms": 0.4})
     assert check.status == "pass"
     assert "exposure" in check.detail
+
+
+def test_end_to_end_without_a_measured_clock_offset_is_not_measured() -> None:
+    """The figure subtracts a producer clock from a browser clock; they must be compared."""
+
+    assert check_end_to_end({"median_ms": 30.0, "p95_ms": 55.0}).status == "not_measured"
+
+
+def test_end_to_end_rejects_a_run_whose_clocks_disagree_too_much() -> None:
+    check = check_end_to_end({"median_ms": 30.0, "p95_ms": 55.0, "clock_uncertainty_ms": 5.0})
+    assert check.status == "fail"
+    assert "not trustworthy" in check.detail
 
 
 def test_overall_verdict_fails_while_any_input_is_missing(tmp_path: Path) -> None:

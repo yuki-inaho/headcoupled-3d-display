@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -260,8 +261,13 @@ def _register_http_routes(application: FastAPI, context: _ApplicationContext) ->
 
     @application.get("/api/health")
     async def health() -> dict[str, object]:
+        # server_unix_ns lets a client measure the offset between its own Unix clock and
+        # this server's, NTP-style, by bracketing the request with two local readings.
+        # Success condition 10 compares a producer timestamp against a browser timestamp;
+        # without this, the two clocks are assumed identical instead of being checked.
         return {
             "status": "ok",
+            "server_unix_ns": time.time_ns(),
             "runtime": runtime.status(selected_source).model_dump(),
         }
 

@@ -103,8 +103,21 @@ pitch_error_deg       0.19253936527826632
 ### 3.2 WebGL2 経路（配布元では未実行）
 
 配布元サンドボックスの Chromium は WebGL が無効で Canvas2D 代替経路しか実行できて
-いませんでしたが、本環境では **WebGL2 経路で 13,810 点の描画を確認**しました
-（`artifacts/playwright-cli-dashboard.png` のフッタ表示が `WebGL2 / 13,810 points`）。
+いませんでしたが、本環境では WebGL2 経路が選択されることを確認しました。
+
+> **2026-08-17 追記 — 当初の証跡は不十分でした。**
+> ここでは当初 `artifacts/playwright-cli-dashboard.png` のフッタ表示
+> `WebGL2 / 13,810 points` を描画の証拠としていましたが、これは**証拠になりません**。
+> フッタはアップロードした点数を報告しているだけで、描画されたかは言っていません。
+> さらに、headless SwiftShader の Playwright スクリーンショットには CSS 層しか写らず、
+> コントラストを3倍に伸ばしても点群もグリッドも現れません。つまり何も描いていない
+> レンダラーでも同じ絵とフッタが得られます。
+>
+> 現在は `readPixels` で描画バッファを直接読む E2E
+> （`tests/e2e/test_browser.py::test_the_scene_actually_reaches_the_drawing_buffer`）
+> を証跡としています。`pcd.js` が色無しPCDへ与える既定色 `[0.80, 0.85, 0.92]`
+> （8bitで `204,216,232`）のピクセルが 12,186 個検出され、背景・後壁・床のグリッド色も
+> 併せて確認できました。何も描かなければ必ず落ちます。
 
 ---
 
