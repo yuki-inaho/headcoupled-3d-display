@@ -125,3 +125,21 @@ benchmark-recorded video=test10_video output=baseline_recorded_raw *extra:
 #   just summarize-performance extra='--command "just benchmark-recorded"'
 summarize-performance raw=baseline_recorded_raw *extra:
     PYTHONPATH={{root}}/src {{python}} scripts/summarize_performance.py --raw {{raw}} {{extra}}
+
+# Step 27: sweep detector-refresh interval candidates over the recording. Runs in
+# facemesh_tracking's Python 3.10 / CUDA environment; writes raw landmarks and timings.
+sweep_raw := root / "artifacts/perf/refresh_sweep_raw.json"
+sweep_report := root / "artifacts/perf/refresh_sweep.json"
+
+sweep-refresh video=test10_video output=sweep_raw *extra:
+    cd {{facemesh_project}} && uv run python {{root}}/scripts/sweep_detector_refresh.py --video {{video}} --output {{output}} {{extra}}
+
+# Step 27: choose the interval from the sweep, or refuse if none meets every threshold.
+# Accuracy is compared against the full-detect reference through the product's own
+# HeadPoseEstimator, using the real intrinsics and personal mesh for that recording.
+analyze-refresh raw=sweep_raw output=sweep_report *extra:
+    PYTHONPATH={{root}}/src {{python}} scripts/analyze_refresh_sweep.py --raw {{raw}} --output {{output}} --profile config/hardware_profile.local.json --user-profile config/user_profile.demo.json {{extra}}
+
+# Step 41: machine-judge the measured reports against the workdoc's thresholds.
+validate-performance *args:
+    PYTHONPATH={{root}}/src {{python}} scripts/validate_performance.py {{args}}
