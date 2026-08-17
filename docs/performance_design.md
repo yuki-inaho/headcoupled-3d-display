@@ -133,6 +133,85 @@ CUDA明示指定が**CPU**へ暗黙fallbackした場合は、速度に関わら�
 | ZeroMQ (CONFLATE) | 未計測 | 未計測 | 未計測 | 未計測 | 未計測 | 未計測 | 未計測 | 未計測 | 未計測 |
 | gRPC Python | 未計測 | 未計測 | 未計測 | 未計測 | 未計測 | 未計測 | 未計測 | 未計測 | 未計測 |
 
-**採用方式:** 未定（フェーズ5・手順33〜34の実測完了後に確定し、本節を更新する）。
+### 5.1 実測結果（2026-08-17、手順33）
 
-**非採用理由:** 未記載（実測結果が出るまで記載しない）。
+GTX 1070 / CUDA 11.8 の実機、localhost、隔離環境 `.venv-transport-bench`。
+条件は §4.2 のとおり（control 60 Hz、preview 10 Hz、consumer stall 100 ms、
+control packet 146 バイト、warmup 60 メッセージ）。
+
+初回は各候補5回の予定を10回で実施したが、p95 の分布が大きく重なり中央値の順位が
+判断根拠にならなかった（json_http 1.06–2.73 ms、binary_http 1.14–**15.69** ms、
+zeromq 0.90–7.11 ms）。§4.2 の「外れ値が大きい場合は回数を増やす」に従い、
+**全4候補を各25回で再測定**した。以下は25回版である。
+
+| 候補 | version | p95中央値 | p95 最小 | p95 最大 | p99中央値 | max_age中央値 | drop中央値 | sequence逆転 | 復帰frame | producer最大enqueue |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 現行 JSON/HTTP | (stdlib) | **1.195 ms** | 1.036 | 2.395 | 2.052 | 0.690 ms | 5 | 0 | 2 | 0.206 ms |
+| binary HTTP | (stdlib) | 1.383 ms | 1.018 | 4.233 | 2.713 | 0.665 ms | 5 | 0 | 2 | 0.171 ms |
+| ZeroMQ | pyzmq 26.4.0 | 1.353 ms | 0.837 | 5.692 | 3.585 | 1.032 ms | 5 | 0 | **1** | 0.488 ms |
+| gRPC Python | grpcio 1.83.0 | 3.972 ms | 1.324 | 7.944 | **46.596** | **85.137 ms** | **0** | 0 | 1 | 0.734 ms |
+
+25回のうち採用基準を満たした回数:
+
+| 候補 | control p95 ≤ 2 ms | max_age ≤ 33.3 ms（30 fps の1フレーム） | producer がブロックした回数 |
+| :--- | ---: | ---: | ---: |
+| 現行 JSON/HTTP | **23/25** | 25/25 | **0** |
+| binary HTTP | 18/25 | 25/25 | **0** |
+| ZeroMQ | 13/25 | 25/25 | 1 |
+| gRPC Python | **3/25** | **0/25** | 2 |
+
+raw: `artifacts/perf/transport_comparison.json`（10回、SHA-256
+`e4b5326249be94975ef22123dd9e9135863aa83a1a3944d1dd2163e62595720e`）、
+`artifacts/perf/transport_comparison_25.json`（25回、SHA-256
+`b5f6541bd424083cb13f57317a0867bfd78e257c689c46a70063722d0aff91c6`）。
+再現コマンド: `just setup-transport-bench` のあと
+`.venv-transport-bench/bin/python scripts/benchmark_transports.py --runs 25 --output <path>`。
+
+### 5.2 採用方式
+
+**採用: HTTP トランスポート + `headcoupled_display.protocol` の固定長バイナリ control packet。**
+control と preview は別エンドポイントに分ける。新規の runtime 依存は追加しない。
+
+トランスポートの選定根拠（HTTP を選ぶ理由）:
+
+- 採用基準（p95 ≤ 2 ms、過負荷解除後2フレーム以内、推論スレッド非ブロック、sequence逆転0）を
+  中央値で満たし、かつ**25回すべてで producer をブロックしなかった**。
+- `max_age` が25回すべて 33.3 ms 以内、すなわち常に1フレーム以内の鮮度を保った。
+- 製品の `pyproject.toml` / `requirements.lock` に新しい依存を一切追加しない。
+
+control payload をバイナリにする理由（レイテンシではなく契約のため）:
+
+- JSON/HTTP と binary/HTTP は**同じトランスポート**であり、選択しているのは payload の符号化である。
+- 実測は json 1.195 ms / binary 1.383 ms（中央値）、基準達成 23/25 対 18/25 で、
+  **binary のほうが速いという主張はできない**。n=25 では両者を分離できず、どちらも中央値で
+  基準を大きく下回る。ここでバイナリを採る理由は速度ではない。
+- バイナリ側にだけある性質: 固定146バイト、magic とプロトコル version の検査、
+  切り詰め・NaN/Inf の拒否、monotonic ns と Unix ns の2系統を混同させない明示フィールド。
+  物理ディスプレイを駆動する制御レーンでは、この契約が JSON の柔軟さより価値がある。
+- **これは明示的な判断であり、計測で binary が優れていたという主張ではない。**
+
+### 5.3 非採用理由
+
+**gRPC Python — 不採用。** §3 で「速いはずという前提で採用しない」と決めたとおり実測で判断した。
+25回すべてで `max_age` が 84〜86 ms、かつ `dropped_count` が **0**。すなわち古いフレームを
+一切捨てずにキューへ溜めて配送している。これは §2 で「負荷試験で否定できた場合に限る」とした
+flow-control による古いframe滞留そのものであり、**否定できず確認された**。加えて
+control p95 ≤ 2 ms を満たしたのは 3/25 回、p99 中央値 46.596 ms、producer を2回ブロックした。
+
+**ZeroMQ — 不採用。** `ZMQ_CONFLATE` による最新値配送は実際に効いており、過負荷解除後の復帰が
+**1フレーム**（HTTP は2フレーム）と唯一の明確な優位点だった。しかし採用基準の p95 ≤ 2 ms を
+満たしたのは 13/25 回にとどまり、25回のうち1回は producer をブロックした。要求は「2フレーム以内」で
+あって「1フレーム」ではないため、HTTP でも要求は満たせる。この状況で pyzmq を製品 runtime 依存に
+加える理由がない。
+
+**採用時の設定（採用しなかったが記録として）:** ZeroMQ を後日採用する場合、`ZMQ_CONFLATE=1` は
+multipart と併用できないため、control と preview は**別ソケット・単一パート**にすること（§2 参照）。
+
+### 5.4 障害時の挙動
+
+- 送信先が落ちている場合、producer は1フレームにつき1回だけ再接続を試み、失敗はそのフレームの
+  失敗として扱う。バックログを積まない。
+- サーバー側は入力が `stale_after_s`（既定 0.5 秒）を超えて途絶えたら、最後の眼位置は保ったまま
+  confidence 0.0 / `diagnostics.stale=true` を配信する。高い confidence の古い姿勢を送り続けない。
+- preview レーンが購読されていない・更新されていなくても control 姿勢は進む。両レーンは独立である。
+
