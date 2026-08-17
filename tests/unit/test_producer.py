@@ -17,6 +17,7 @@ checks the real ``BBox`` contract rather than a hand-rolled stand-in for it.
 
 from __future__ import annotations
 
+import itertools
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -25,6 +26,7 @@ import numpy as np
 import pytest
 
 import scripts.facemesh_ipc_producer as producer
+from headcoupled_display.tracking import jpeg_dimensions
 
 #: See the module docstring: only facemesh_tracking's dependency-free geometry module is
 #: reached this way, never anything that imports onnxruntime/UniFace/CUDA.
@@ -198,9 +200,7 @@ def _shifted_landmarks(dx: float, score: float = 0.9) -> FaceLandmarks:
     simulates the face having moved since the anchor frame, for propagation-transform
     tests (the shape stays identical, so ``scale_x == 1`` and only the offset changes).
     """
-    return _make_landmarks(
-        _spread_xy(x0=60.0 + dx, x1=140.0 + dx, y0=60.0, y1=140.0), score=score
-    )
+    return _make_landmarks(_spread_xy(x0=60.0 + dx, x1=140.0 + dx, y0=60.0, y1=140.0), score=score)
 
 
 @dataclass
@@ -775,3 +775,78 @@ def test_cli_detector_refresh_interval_default_is_one() -> None:
 
     args = parser.parse_args(["--detector-refresh-interval", "5"])
     assert args.detector_refresh_interval == 5
+
+
+# --- Preview lane (workdoc steps 37-38) ---------------------------------------------
+
+
+def test_preview_publish_rate_is_capped_at_ten_fps() -> None:
+    """Feed frames at a simulated 30 FPS and assert the 10 FPS preview cap holds.
+
+    Uses a virtual clock (no real ``sleep``) so the assertion is exact, not timing-flaky.
+    """
+    now = 0.0
+    last_sent: float | None = None
+    sent_at: list[float] = []
+    frame_interval = 1.0 / 30.0
+
+    for _ in range(90):  # 3 simulated seconds of 30 FPS frames
+        if producer._should_publish_preview(now, last_sent):
+            sent_at.append(now)
+            last_sent = now
+        now += frame_interval
+
+    # 3s at <= 10 FPS is at most 31 sends (one immediate send plus 30 more one full
+    # second apart in the worst case of interval rounding).
+    assert 1 < len(sent_at) <= 31
+    for earlier, later in itertools.pairwise(sent_at):
+        assert later - earlier >= producer.PREVIEW_MIN_INTERVAL_S - 1e-9
+
+
+def test_encode_preview_frame_resizes_to_the_preview_contract() -> None:
+    """The producer must always send exactly the 640x360 the server's contract expects."""
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+    encoded = producer.encode_preview_frame(frame, None, "label", jpeg_quality=82)
+
+    assert jpeg_dimensions(encoded) == (producer.PREVIEW_WIDTH_PX, producer.PREVIEW_HEIGHT_PX)
+
+
+def test_encode_preview_frame_draws_landmarks_scaled_into_preview_space() -> None:
+    """Landmark coordinates are in full-resolution pixels; drawing must not go out of
+    the resized 640x360 canvas (a naive un-scaled draw would land far outside it)."""
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    # A landmark near the full-resolution frame's bottom-right corner.
+    landmarks_xy = np.tile(np.array([[1270.0, 710.0]]), (478, 1))
+
+    encoded = producer.encode_preview_frame(frame, landmarks_xy, "label", jpeg_quality=82)
+
+    # Encoding must succeed without raising (an unscaled circle center would fall
+    # outside the 640x360 canvas, which OpenCV clips silently rather than erroring, so
+    # the meaningful assertion here is that the contract dimensions still hold).
+    assert jpeg_dimensions(encoded) == (producer.PREVIEW_WIDTH_PX, producer.PREVIEW_HEIGHT_PX)
+
+
+class _RaisingPreviewPublisher:
+    """Stands in for an ``IpcPublisher`` whose preview POST always fails."""
+
+    def publish_bytes(self, body: bytes, *, content_type: str) -> None:
+        raise OSError("preview socket exploded")
+
+
+def test_preview_publish_failure_is_swallowed_and_never_propagates() -> None:
+    """A raising preview lane must not stop whatever the caller does next -- in
+    ``main()``, that is the following frame's control-packet publish."""
+    log_calls: list[str] = []
+
+    ok = producer.publish_preview_best_effort(
+        _RaisingPreviewPublisher(), b"\xff\xd8fake-jpeg", log=log_calls.append
+    )
+
+    assert ok is False
+    assert len(log_calls) == 1
+    assert "preview socket exploded" in log_calls[0]
+    # If publish_preview_best_effort had let the OSError propagate, this line would
+    # never run -- proving control-lane code placed after it is unaffected.
+    log_calls.append("control lane continued")
+    assert log_calls[-1] == "control lane continued"

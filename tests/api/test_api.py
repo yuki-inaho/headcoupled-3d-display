@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 from pathlib import Path
 
@@ -13,6 +12,7 @@ from pydantic import ValidationError
 from headcoupled_display.api import create_app
 from headcoupled_display.face_model import canonical_face_model
 from headcoupled_display.models import HardwareProfile
+from headcoupled_display.protocol import ControlPacket, encode_control_packet
 from headcoupled_display.tracking import HeadPoseEstimator
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -117,7 +117,18 @@ def test_latest_jpeg_endpoint_becomes_ready() -> None:
         assert response.headers["content-type"] == "image/jpeg"
 
 
-def test_ipc_frame_pair_drives_pose_and_camera_streams() -> None:
+def _make_ipc_app(*, source: str = "ipc"):
+    return create_app(
+        profile_path=ROOT / "config" / "hardware_profile.demo.json",
+        user_profile_path=ROOT / "config" / "user_profile.demo.json",
+        scene_path=ROOT / "config" / "scene_profile.default.json",
+        source=source,
+    )
+
+
+def _sample_control_packet_bytes(*, sequence: int, **overrides: object) -> bytes:
+    """A control packet whose 12 points actually reproject to a convergeable pose,
+    reusing the same synthetic projection the old single-lane IPC test used."""
     hardware = HardwareProfile.load(ROOT / "config" / "hardware_profile.demo.json")
     indices = HeadPoseEstimator.LANDMARK_INDICES
     projected, _ = cv2.projectPoints(
@@ -127,28 +138,126 @@ def test_ipc_frame_pair_drives_pose_and_camera_streams() -> None:
         np.asarray(hardware.camera.camera_matrix, dtype=np.float64),
         np.asarray(hardware.camera.distortion_coefficients, dtype=np.float64),
     )
-    landmarks = np.zeros((478, 3), dtype=np.float64)
-    landmarks[indices, :2] = projected.reshape(-1, 2)
-    encoded_ok, encoded = cv2.imencode(".jpg", np.full((720, 1280, 3), 64, dtype=np.uint8))
-    assert encoded_ok
-    app = create_app(
-        profile_path=ROOT / "config" / "hardware_profile.demo.json",
-        user_profile_path=ROOT / "config" / "user_profile.demo.json",
-        source="ipc",
-    )
-    payload = {
-        "frame_index": 7,
-        "faces": [{"score": 0.99, "landmarks": landmarks.tolist()}],
-        "frame_jpeg_base64": base64.b64encode(encoded).decode("ascii"),
+    landmarks_px = tuple((float(x), float(y)) for x, y in projected.reshape(-1, 2))
+    fields: dict[str, object] = {
+        "landmarks_px": landmarks_px,
+        "score": 0.99,
+        "sequence": sequence,
+        "capture_monotonic_ns": 1_000,
+        "capture_unix_ns": 1_755_000_000_000_000_000,
+        "inference_monotonic_ns": 1_010,
+        "inference_unix_ns": 1_755_000_000_010_000_000,
     }
+    fields.update(overrides)
+    return encode_control_packet(ControlPacket(**fields))  # type: ignore[arg-type]
 
-    with TestClient(app) as client:
-        accepted = client.post("/api/input/facemesh", json=payload)
-        assert accepted.status_code == 202
-        assert accepted.json()["accepted_version"] == 1
+
+def _preview_jpeg_bytes(width: int, height: int) -> bytes:
+    encoded_ok, encoded = cv2.imencode(".jpg", np.full((height, width, 3), 64, dtype=np.uint8))
+    assert encoded_ok
+    return encoded.tobytes()
+
+
+def test_ipc_control_endpoint_accepts_a_packet_and_returns_its_sequence() -> None:
+    with TestClient(_make_ipc_app()) as client:
+        response = client.post(
+            "/api/input/facemesh/control",
+            content=_sample_control_packet_bytes(sequence=7),
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        assert response.status_code == 200
+        assert response.json()["accepted_sequence"] == 7
+
+
+def test_ws_pose_reports_ipc_source_after_a_control_publish() -> None:
+    with TestClient(_make_ipc_app()) as client:
+        client.post(
+            "/api/input/facemesh/control",
+            content=_sample_control_packet_bytes(sequence=7),
+            headers={"Content-Type": "application/octet-stream"},
+        )
         with client.websocket_connect("/ws/pose") as socket:
             message = socket.receive_json()
             assert message["payload"]["source"] == "ipc"
             assert message["payload"]["diagnostics"]["input_frame"] == 7
+
+
+def test_ipc_preview_endpoint_forwards_bytes_unchanged_to_ws_camera() -> None:
+    preview = _preview_jpeg_bytes(640, 360)
+    with TestClient(_make_ipc_app()) as client:
+        # Preview before control, deliberately: the background runtime loop only reads
+        # /ws/camera's next frame on a *control* update (see IpcFaceMeshInput.next_frame).
+        # Publishing the preview first guarantees it is already the latest preview by the
+        # time our control publish is the one the loop observes, instead of racing a poll
+        # that might consume our control before this preview POST has landed.
+        response = client.post(
+            "/api/input/facemesh/preview", content=preview, headers={"Content-Type": "image/jpeg"}
+        )
+        assert response.status_code == 204
+        client.post(
+            "/api/input/facemesh/control",
+            content=_sample_control_packet_bytes(sequence=1),
+            headers={"Content-Type": "application/octet-stream"},
+        )
         with client.websocket_connect("/ws/camera") as socket:
-            assert socket.receive_bytes().startswith(b"\xff\xd8")
+            assert socket.receive_bytes() == preview
+
+
+def test_ipc_preview_endpoint_rejects_the_wrong_resolution() -> None:
+    with TestClient(_make_ipc_app()) as client:
+        response = client.post(
+            "/api/input/facemesh/preview",
+            content=_preview_jpeg_bytes(1280, 720),
+            headers={"Content-Type": "image/jpeg"},
+        )
+        assert response.status_code == 422
+
+
+def test_ipc_control_endpoint_rejects_a_malformed_packet() -> None:
+    with TestClient(_make_ipc_app()) as client:
+        response = client.post(
+            "/api/input/facemesh/control",
+            content=b"not a control packet",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        assert response.status_code == 422
+
+
+def test_ipc_endpoints_are_refused_unless_the_server_was_started_with_source_ipc() -> None:
+    with TestClient(_make_ipc_app(source="synthetic")) as client:
+        control_response = client.post(
+            "/api/input/facemesh/control",
+            content=_sample_control_packet_bytes(sequence=1),
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        preview_response = client.post(
+            "/api/input/facemesh/preview",
+            content=_preview_jpeg_bytes(640, 360),
+            headers={"Content-Type": "image/jpeg"},
+        )
+        assert control_response.status_code == 409
+        assert preview_response.status_code == 409
+
+
+def test_ipc_provider_never_re_encodes_a_forwarded_preview() -> None:
+    preview = _preview_jpeg_bytes(640, 360)
+    app = _make_ipc_app()
+    with TestClient(app) as client:
+        # Preview before control -- see the comment in
+        # test_ipc_preview_endpoint_forwards_bytes_unchanged_to_ws_camera for why the
+        # order matters here.
+        client.post(
+            "/api/input/facemesh/preview", content=preview, headers={"Content-Type": "image/jpeg"}
+        )
+        client.post(
+            "/api/input/facemesh/control",
+            content=_sample_control_packet_bytes(sequence=1),
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        with client.websocket_connect("/ws/camera") as socket:
+            assert socket.receive_bytes() == preview
+        # No public accessor exists for the running provider instance; reach into the
+        # coordinator's own reference rather than construct a second provider that would
+        # not reflect what the app actually ran (workdoc step 38, DoD item 14).
+        provider = app.state.runtime._provider
+        assert provider.preview_encode_count == 0

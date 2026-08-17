@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import json
 import os
 import sys
@@ -17,6 +15,7 @@ from typing import Protocol, runtime_checkable
 import cv2
 import numpy as np
 
+from . import protocol
 from .face_model import HEAD_TO_OPENCV, FaceModel, canonical_face_model, load_personal_face_model
 from .geometry import normalize
 from .models import HardwareProfile, TrackingSource, TrackingState, UserProfile
@@ -25,7 +24,10 @@ from .profiles import resolved_camera_to_display
 
 @runtime_checkable
 class TrackingProvider(Protocol):
-    def sample(self) -> tuple[TrackingState, bytes]: ...
+    #: ``None`` only when neither a raw frame nor a producer-compressed preview is
+    #: available yet (the IPC control lane before its first preview arrives); see
+    #: ``FaceMeshPoseProvider.sample`` and ``FaceMeshInputFrame``.
+    def sample(self) -> tuple[TrackingState, bytes | None]: ...
 
     def close(self) -> None: ...
 
@@ -89,11 +91,31 @@ class FaceMeshInputFrame:
     #: producer could not have drawn itself. ``None`` keeps the local encode path, which
     #: recorded replay and synthetic sources still use.
     preview_jpeg: bytes | None = None
+    #: Upstream-producer clock readings to surface in ``TrackingState.diagnostics``, or
+    #: ``None`` when there is no separate producer process (replay/synthetic/live camera
+    #: all run PnP in this process, so ``started``/``time.perf_counter()`` already cover
+    #: them). Keys must self-describe both *whose* clock and *which* domain, since the
+    #: producer and this server are separate processes: a ``*_monotonic_ns`` value is
+    #: only comparable to another ``*_monotonic_ns`` value from the *same* process, never
+    #: across processes, and never against a ``*_unix_ns`` value (see protocol.py's own
+    #: ``ControlPacket`` docstring). See ``IpcFaceMeshInput.next_frame`` for the actual
+    #: keys this port populates.
+    source_timestamps: dict[str, int] | None = None
 
 
 #: JPEG start-of-frame markers. SOF4/SOF8/SOF12 are not frame headers despite being in
 #: the 0xC0-0xCF block, so they are excluded rather than mis-parsed.
 _JPEG_SOF_EXCLUDED = frozenset({0xC4, 0xC8, 0xCC})
+
+#: Preview lane resolution contract (workdoc steps 37-38). The server never resizes or
+#: re-encodes a preview -- it only checks these dimensions via ``jpeg_dimensions`` and
+#: rejects anything else with 422. Recognition/PnP always stay at the camera's full
+#: resolution; this is a separate, display-only contract, never derived from it.
+#: Mirrored (not imported) in ``scripts/facemesh_ipc_producer.py``'s own
+#: ``PREVIEW_WIDTH_PX``/``PREVIEW_HEIGHT_PX``, since that script runs in a separate
+#: Python 3.10 process and only imports the dependency-free ``protocol`` submodule.
+PREVIEW_WIDTH_PX = 640
+PREVIEW_HEIGHT_PX = 360
 
 
 def jpeg_dimensions(data: bytes) -> tuple[int, int]:
@@ -330,83 +352,157 @@ class RecordedFaceMeshInput:
         self._capture.release()
 
 
-class IpcFaceMeshInput:
-    """Latest-value localhost input port for a separate FaceMesh Python environment.
+def _sparse_landmarks_from_control(packet: protocol.ControlPacket) -> np.ndarray:
+    """Expand a control packet's 12 image points into a ``(478, 2)`` landmark array.
 
-    Producers submit one JSON object containing an MJPEG frame and the corresponding
-    FaceMesh landmarks. Only the newest complete pair is retained, matching the browser
-    runtime's no-backlog policy.
+    ``HeadPoseEstimator.estimate`` expects an array shaped like a full FaceMesh result
+    and gathers ``LANDMARK_INDICES`` (identical to ``protocol.LANDMARK_INDICES``, see
+    protocol.py's own cross-check test) out of it. The control lane carries only those
+    12 points, so every other row is filled with NaN rather than some plausible-looking
+    placeholder: if anything ever reads a row this transport does not carry, it must
+    fail loudly (NaN fails ``estimate``'s finiteness check) instead of silently acting
+    on stale or zeroed-out data.
+
+    Known limitation -- personal-mesh iris eye positions: ``HeadPoseEstimator`` never
+    reads a *live* iris landmark (index 468/473) per frame either way -- when a personal
+    face model is loaded, ``self.left_eye_head_m``/``right_eye_head_m`` are read once
+    from the model's own fixed mesh (``FaceModel.left_iris_head_m``/``right_iris_head_m``,
+    reconstructed offline) at ``HeadPoseEstimator.__init__`` time, not from any per-frame
+    observation. So this control packet's omission of live 468/473 does not break that
+    path today. It does mean no *future* code path can read a live per-frame iris
+    position over this transport (it would only ever see NaN here); such code must
+    explicitly fall back to ``UserProfile.left_eye_center_head_m``/
+    ``right_eye_center_head_m`` -- the same fallback already used whenever no personal
+    face model is loaded at all -- rather than silently treating NaN as a real position.
+    """
+
+    landmarks = np.full((478, 2), np.nan, dtype=np.float64)
+    landmarks[list(protocol.LANDMARK_INDICES), :] = np.asarray(
+        packet.landmarks_px, dtype=np.float64
+    )
+    return landmarks
+
+
+def _control_source_timestamps(packet: protocol.ControlPacket) -> dict[str, int]:
+    """Producer-side clock readings for ``FaceMeshInputFrame.source_timestamps``.
+
+    Keys are named ``producer_*`` (whose clock) and ``*_monotonic_ns``/``*_unix_ns``
+    (which domain) so a consumer never has to guess before comparing: the two
+    ``producer_*_monotonic_ns`` values are only comparable to each other (both come from
+    the producer's own ``time.perf_counter_ns()``), never to this server's own clock. The
+    two ``producer_*_unix_ns`` values share a Unix epoch with this server's
+    ``time.time_ns()`` and with a browser's
+    ``performance.timeOrigin + performance.now()`` converted to ns (modulo ordinary
+    clock-sync error), so those are the pair success condition 10 (recognition-to-WebGL
+    latency) is measured against.
+    """
+
+    return {
+        "producer_capture_monotonic_ns": packet.capture_monotonic_ns,
+        "producer_capture_unix_ns": packet.capture_unix_ns,
+        "producer_inference_monotonic_ns": packet.inference_monotonic_ns,
+        "producer_inference_unix_ns": packet.inference_unix_ns,
+    }
+
+
+class IpcFaceMeshInput:
+    """Two-lane latest-value localhost input port for a separate FaceMesh process.
+
+    Control and preview are independent lanes (workdoc steps 36-38); each retains only
+    its newest published value, so neither lane ever accumulates a backlog.
+    ``next_frame`` blocks on new *control* data only: a control packet advances the pose
+    whether or not a preview has ever been published, and publishing (or not
+    republishing) a preview never blocks or skips a control update. A rejected preview
+    never affects control, and a rejected control packet never touches the stored
+    preview -- ``publish_control``/``publish_preview`` validate independently.
     """
 
     def __init__(self, hardware: HardwareProfile) -> None:
-        self._expected_size = (hardware.camera.image_width_px, hardware.camera.image_height_px)
+        # `hardware` is accepted only for constructor-signature stability with existing
+        # callers (api.py). Unlike the old single-lane JSON+JPEG payload, neither lane's
+        # geometry depends on it any more: the control lane is a fixed 12-point wire
+        # format (protocol.py) independent of camera resolution, and the preview lane's
+        # resolution is the fixed PREVIEW_WIDTH_PX/PREVIEW_HEIGHT_PX contract instead of
+        # the camera's own intrinsics.
+        del hardware
         self._condition = Condition()
-        self._latest: FaceMeshInputFrame | None = None
+        self._latest_control: protocol.ControlPacket | None = None
+        self._latest_preview: bytes | None = None
         self._published_version = 0
         self._consumed_version = 0
         self._closed = False
 
-    def publish_payload(self, payload: object) -> int:
-        if not isinstance(payload, dict):
-            raise ValueError("FaceMesh IPC payload must be a JSON object")
-        frame_index = payload.get("frame_index")
-        faces = payload.get("faces")
-        encoded_jpeg = payload.get("frame_jpeg_base64")
-        if isinstance(frame_index, bool) or not isinstance(frame_index, int) or frame_index < 0:
-            raise ValueError("FaceMesh IPC payload has an invalid frame_index")
-        if not isinstance(faces, list):
-            raise ValueError("FaceMesh IPC payload must contain a faces list")
-        if not isinstance(encoded_jpeg, str):
-            raise ValueError("FaceMesh IPC payload must contain frame_jpeg_base64")
-        observations = tuple(
-            _parse_replay_face(face, frame_index=frame_index, face_index=face_index)
-            for face_index, face in enumerate(faces)
-        )
-        frame = self._decode_frame(encoded_jpeg)
+    def publish_control(self, packet: bytes) -> int:
+        """Decode and accept one control packet, returning its wire sequence number.
+
+        Raises ``protocol.ProtocolError`` (a ``ValueError``) for anything malformed:
+        bad magic/version, wrong length, or non-finite coordinates/score.
+        """
+
+        decoded = protocol.decode_control_packet(packet)
         with self._condition:
             if self._closed:
                 raise RuntimeError("FaceMesh IPC input is closed")
-            self._latest = FaceMeshInputFrame(
-                frame_bgr=frame,
-                faces=observations,
-                label="FaceMesh IPC",
-                frame_index=frame_index,
-            )
+            self._latest_control = decoded
             self._published_version += 1
             self._condition.notify_all()
-            return self._published_version
+        return decoded.sequence
 
-    def _decode_frame(self, encoded_jpeg: str) -> np.ndarray:
-        try:
-            encoded = base64.b64decode(encoded_jpeg, validate=True)
-        except (binascii.Error, ValueError) as exc:
-            raise ValueError("FaceMesh IPC frame_jpeg_base64 is invalid") from exc
-        frame = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
-        if frame is None:
-            raise ValueError("FaceMesh IPC frame is not a decodable JPEG")
-        size = (frame.shape[1], frame.shape[0])
-        if size != self._expected_size:
+    def publish_preview(self, jpeg: bytes) -> None:
+        """Accept one already-compressed preview frame, checked only for dimensions.
+
+        Never decoded back into pixels anywhere in this module (workdoc step 36-38 DoD)
+        -- the bytes are stored as-is and later forwarded byte-for-byte by
+        ``FaceMeshPoseProvider.sample``.
+        """
+
+        width, height = jpeg_dimensions(jpeg)
+        if (width, height) != (PREVIEW_WIDTH_PX, PREVIEW_HEIGHT_PX):
             raise ValueError(
-                "FaceMesh IPC frame dimensions must match the intrinsics "
-                f"({size[0]}x{size[1]} != {self._expected_size[0]}x{self._expected_size[1]})"
+                "FaceMesh IPC preview must be "
+                f"{PREVIEW_WIDTH_PX}x{PREVIEW_HEIGHT_PX}, got {width}x{height}"
             )
-        return frame
+        with self._condition:
+            if self._closed:
+                raise RuntimeError("FaceMesh IPC input is closed")
+            self._latest_preview = jpeg
 
     def next_frame(self) -> FaceMeshInputFrame:
+        """Block for the next *control* update only; preview never gates this call.
+
+        Returns ``frame_bgr=None`` always (the IPC control lane never carries raw
+        pixels) and ``preview_jpeg`` set to whatever preview was most recently
+        published -- possibly ``None`` if none has arrived yet, possibly the same bytes
+        as last time if the preview lane simply has not been updated since.
+        """
+
         deadline = time.monotonic() + 3.0
         with self._condition:
             while not self._closed and (
-                self._latest is None or self._published_version == self._consumed_version
+                self._latest_control is None or self._published_version == self._consumed_version
             ):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0.0:
-                    raise TimeoutError("waiting for a FaceMesh IPC frame timed out")
+                    raise TimeoutError("waiting for a FaceMesh IPC control packet timed out")
                 self._condition.wait(remaining)
             if self._closed:
                 raise RuntimeError("FaceMesh IPC input is closed")
-            assert self._latest is not None
+            assert self._latest_control is not None
             self._consumed_version = self._published_version
-            return self._latest
+            control = self._latest_control
+            preview = self._latest_preview
+        return FaceMeshInputFrame(
+            frame_bgr=None,
+            faces=(
+                FaceMeshObservation(
+                    score=control.score, landmarks_xy=_sparse_landmarks_from_control(control)
+                ),
+            ),
+            label="FaceMesh IPC",
+            frame_index=control.sequence,
+            preview_jpeg=preview,
+            source_timestamps=_control_source_timestamps(control),
+        )
 
     def close(self) -> None:
         with self._condition:
@@ -489,7 +585,7 @@ class FaceMeshPoseProvider:
     def preview_forward_count(self) -> int:
         return self._forwarded_previews
 
-    def sample(self) -> tuple[TrackingState, bytes]:
+    def sample(self) -> tuple[TrackingState, bytes | None]:
         started = time.perf_counter()
         input_frame = self._frame_source.next_frame()
         if input_frame.faces:
@@ -499,13 +595,24 @@ class FaceMeshPoseProvider:
             )
         else:
             measurement = self._fallback_measurement(0)
-        diagnostics = (
-            None if input_frame.frame_index is None else {"input_frame": input_frame.frame_index}
-        )
+        diagnostics: dict[str, object] | None = None
+        if input_frame.frame_index is not None:
+            diagnostics = {"input_frame": input_frame.frame_index}
+        if input_frame.source_timestamps is not None:
+            # Replay/synthetic/live-camera frames leave source_timestamps at its default
+            # None and so never add these keys (workdoc step 36 follow-up, item 4).
+            diagnostics = {**(diagnostics or {}), **input_frame.source_timestamps}
         state = self._build_state(measurement, started, diagnostics=diagnostics)
         if input_frame.preview_jpeg is not None:
             self._forwarded_previews += 1
             return state, input_frame.preview_jpeg
+        if input_frame.frame_bgr is None:
+            # Neither a producer-compressed preview nor raw pixels are available yet --
+            # the IPC control lane before its first preview publish. There is nothing to
+            # send on /ws/camera this tick; that is fine, subscribers simply keep
+            # waiting. The control-lane pose above still advances regardless (workdoc
+            # steps 36-38): a preview lane that has never been used must never block it.
+            return state, None
         self._encoded_previews += 1
         return state, self._encode_preview(input_frame.frame_bgr, measurement, input_frame.label)
 

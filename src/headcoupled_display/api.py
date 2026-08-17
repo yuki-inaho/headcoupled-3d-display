@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -321,18 +321,43 @@ def _register_http_routes(application: FastAPI, context: _ApplicationContext) ->
         }
 
 
-def _register_ipc_input_route(application: FastAPI, ipc_input: IpcFaceMeshInput | None) -> None:
-    @application.post("/api/input/facemesh", status_code=202)
-    async def publish_facemesh_input(payload: dict[str, object]) -> dict[str, int]:
-        """Accept one complete localhost frame/landmark pair from the FaceMesh process."""
+def _register_ipc_input_routes(application: FastAPI, ipc_input: IpcFaceMeshInput | None) -> None:
+    """Register the two independent IPC lanes (workdoc steps 36-38): control (a fixed-
+    size binary pose packet, ``application/octet-stream``, see ``protocol.py``) and
+    preview (an already-compressed JPEG, ``image/jpeg``). These are deliberately
+    separate endpoints and payload formats rather than one JSON envelope, so a broken
+    or throttled preview can never block or delay a control update -- see
+    ``IpcFaceMeshInput``'s own docstring.
+    """
 
+    def _require_ipc_source() -> IpcFaceMeshInput:
         if ipc_input is None:
             raise HTTPException(status_code=409, detail="server was not started with --source ipc")
+        return ipc_input
+
+    @application.post("/api/input/facemesh/control")
+    async def publish_facemesh_control(request: Request) -> dict[str, int]:
+        """Accept one raw, fixed-length control packet (see ``protocol.PACKET_SIZE``)."""
+
+        port = _require_ipc_source()
+        body = await request.body()
         try:
-            version = ipc_input.publish_payload(payload)
-        except (RuntimeError, ValueError) as exc:
+            sequence = port.publish_control(body)
+        except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"accepted_version": version}
+        return {"accepted_sequence": sequence}
+
+    @application.post("/api/input/facemesh/preview", status_code=204)
+    async def publish_facemesh_preview(request: Request) -> Response:
+        """Accept one raw, already-compressed JPEG preview; forwarded, never decoded."""
+
+        port = _require_ipc_source()
+        body = await request.body()
+        try:
+            port.publish_preview(body)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return Response(status_code=204)
 
 
 def _register_websocket_routes(application: FastAPI, runtime: RuntimeCoordinator) -> None:
@@ -404,7 +429,7 @@ def create_app(
     )
     application.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
     _register_http_routes(application, context)
-    _register_ipc_input_route(application, context.ipc_input)
+    _register_ipc_input_routes(application, context.ipc_input)
     _register_websocket_routes(application, context.runtime)
 
     return application

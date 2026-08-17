@@ -8,9 +8,8 @@ the Python 3.13 display package or inherit its dependency constraints.
 from __future__ import annotations
 
 import argparse
-import base64
 import http.client
-import json
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -22,10 +21,31 @@ from urllib.parse import urlsplit
 import cv2
 import numpy as np
 
+#: This script normally runs in a separate Python 3.10/CUDA environment via
+#: `just facemesh-ipc`, which does not set PYTHONPATH -- so `headcoupled_display.protocol`
+#: (the only headcoupled_display module this script needs; deliberately dependency-free,
+#: see protocol.py's own module docstring) is reached by inserting this repo's `src/`
+#: directly, computed from this file's own location rather than an environment variable.
+_PROTOCOL_SRC_DIR = Path(__file__).resolve().parent.parent / "src"
+if str(_PROTOCOL_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_PROTOCOL_SRC_DIR))
+
+from headcoupled_display.protocol import (  # noqa: E402
+    LANDMARK_INDICES,
+    ControlPacket,
+    encode_control_packet,
+)
+
 
 @dataclass
 class IpcPublisher:
-    """Persistent HTTP publisher with one reconnect attempt per complete frame."""
+    """Persistent HTTP publisher with one reconnect attempt per request.
+
+    Generic over a single endpoint URL and raw payload bytes. The producer keeps two
+    independent instances -- control lane and preview lane (workdoc steps 36-38) -- each
+    with its own connection, so a broken preview-lane socket can never affect the
+    control lane's.
+    """
 
     endpoint: str
 
@@ -39,8 +59,7 @@ class IpcPublisher:
             self._path = f"{self._path}?{parsed.query}"
         self._connection: http.client.HTTPConnection | None = None
 
-    def publish(self, payload: dict[str, Any]) -> None:
-        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    def publish_bytes(self, body: bytes, *, content_type: str) -> None:
         for attempt in range(2):
             try:
                 connection = self._connection or http.client.HTTPConnection(self._host, timeout=3.0)
@@ -49,7 +68,7 @@ class IpcPublisher:
                     "POST",
                     self._path,
                     body=body,
-                    headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
+                    headers={"Content-Type": content_type, "Content-Length": str(len(body))},
                 )
                 response = connection.getresponse()
                 response_body = response.read().decode("utf-8", errors="replace")
@@ -65,6 +84,108 @@ class IpcPublisher:
         if self._connection is not None:
             self._connection.close()
         self._connection = None
+
+
+def build_control_packet(
+    face: Any,
+    *,
+    sequence: int,
+    capture_monotonic_ns: int,
+    capture_unix_ns: int,
+    inference_monotonic_ns: int,
+    inference_unix_ns: int,
+) -> ControlPacket:
+    """Build one control-lane packet from a detected face's dense landmarks.
+
+    Only `LANDMARK_INDICES` -- the wire format's fixed 12-point subset, see protocol.py
+    -- ever leaves this process on the control lane; the other ~466 dense points never
+    cross the process boundary.
+    """
+
+    landmarks_px = tuple(
+        (float(face.points[index, 0]), float(face.points[index, 1])) for index in LANDMARK_INDICES
+    )
+    return ControlPacket(
+        landmarks_px=landmarks_px,
+        score=float(face.score),
+        sequence=sequence,
+        capture_monotonic_ns=capture_monotonic_ns,
+        capture_unix_ns=capture_unix_ns,
+        inference_monotonic_ns=inference_monotonic_ns,
+        inference_unix_ns=inference_unix_ns,
+    )
+
+
+#: Preview lane resolution (workdoc steps 37-38). Must exactly match the server's
+#: `/api/input/facemesh/preview` contract (`jpeg_dimensions()` in tracking.py rejects
+#: anything else with 422 rather than resizing it server-side). Recognition/PnP always
+#: stay at the full `--width`/`--height` (1280x720 by default); this is a *separate*,
+#: display-only contract, never derived from or substituted for it.
+PREVIEW_WIDTH_PX = 640
+PREVIEW_HEIGHT_PX = 360
+
+#: Preview publish rate cap (workdoc steps 37-38). Control packets go out on every
+#: processed frame; previews are throttled well below the ~27-30 FPS recognition rate
+#: because a compressed thumbnail refreshing faster than it is ever displayed is wasted
+#: encode/network work competing with the control lane for the same producer process.
+PREVIEW_MAX_FPS = 10.0
+PREVIEW_MIN_INTERVAL_S = 1.0 / PREVIEW_MAX_FPS
+
+
+def _should_publish_preview(now_s: float, last_sent_s: float | None) -> bool:
+    """True once at least `PREVIEW_MIN_INTERVAL_S` has passed since the last send.
+
+    A separate, pure predicate (rather than inline in the main loop) so the 10 FPS cap
+    can be checked against a virtual clock in tests, with no real `sleep`.
+    """
+
+    return last_sent_s is None or (now_s - last_sent_s) >= PREVIEW_MIN_INTERVAL_S
+
+
+def encode_preview_frame(
+    frame_bgr: np.ndarray,
+    landmarks_xy: np.ndarray | None,
+    label: str,
+    *,
+    jpeg_quality: int,
+) -> bytes:
+    """Resize a full-resolution BGR frame to the preview contract, draw the overlay, and
+    JPEG-encode it. The server forwards these bytes untouched (workdoc steps 37-38), so
+    any overlay has to be baked in here -- there is nowhere left downstream to draw it.
+    """
+
+    preview = cv2.resize(
+        frame_bgr, (PREVIEW_WIDTH_PX, PREVIEW_HEIGHT_PX), interpolation=cv2.INTER_AREA
+    )
+    if landmarks_xy is not None:
+        scale_x = PREVIEW_WIDTH_PX / frame_bgr.shape[1]
+        scale_y = PREVIEW_HEIGHT_PX / frame_bgr.shape[0]
+        for x, y in landmarks_xy[::8, :2]:
+            center = (round(float(x) * scale_x), round(float(y) * scale_y))
+            cv2.circle(preview, center, 1, (90, 220, 170), -1)
+    cv2.putText(
+        preview, label, (8, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (90, 220, 170), 1, cv2.LINE_AA
+    )
+    encoded_ok, encoded = cv2.imencode(".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
+    if not encoded_ok:
+        raise RuntimeError("failed to encode preview frame")
+    return encoded.tobytes()
+
+
+def publish_preview_best_effort(
+    publisher: IpcPublisher, body: bytes, *, log: Callable[[str], None] = print
+) -> bool:
+    """Publish preview bytes, swallowing any failure so it can never stop the control
+    lane (workdoc step 38). The return value is for logging/metrics only; callers must
+    not branch production behavior on it.
+    """
+
+    try:
+        publisher.publish_bytes(body, content_type="image/jpeg")
+    except (OSError, RuntimeError) as exc:
+        log(f"preview publish failed (control lane unaffected): {exc}")
+        return False
+    return True
 
 
 #: Alignment landmark indices used to synthesize a detector-equivalent 5-point template
@@ -180,8 +301,9 @@ class TemporalRoiRunner:
             else None
         )
         result = (
-            self._run_full_detect(frame) if self._needs_full_detect(roi) else
-            self._run_landmark_only(frame, roi)
+            self._run_full_detect(frame)
+            if self._needs_full_detect(roi)
+            else self._run_landmark_only(frame, roi)
         )
         self._last_landmarks = result.faces[0] if result.faces else None
         return result
@@ -493,7 +615,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "picks a value from measured accuracy/latency."
         ),
     )
-    parser.add_argument("--endpoint", default="http://127.0.0.1:8000/api/input/facemesh")
+    parser.add_argument(
+        "--endpoint",
+        default="http://127.0.0.1:8000/api/input/facemesh",
+        help=(
+            "Base URL for the two independent IPC lanes (workdoc steps 36-38), not an "
+            "endpoint by itself: control packets POST to '<endpoint>/control' "
+            "(application/octet-stream, see headcoupled_display.protocol) and previews "
+            "POST to '<endpoint>/preview' (image/jpeg)."
+        ),
+    )
     parser.add_argument(
         "--backend",
         choices=("cuda", "cpu"),
@@ -509,7 +640,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
-    parser.add_argument("--jpeg-quality", type=int, default=82, choices=range(1, 101))
+    parser.add_argument(
+        "--jpeg-quality",
+        type=int,
+        default=82,
+        choices=range(1, 101),
+        help="JPEG quality for the preview lane only (workdoc step 37-38). The control "
+        "lane never carries pixels.",
+    )
     parser.add_argument(
         "--max-frames", type=int, default=0, help="Stop after N frames (0 = until Ctrl-C)"
     )
@@ -590,12 +728,16 @@ def main() -> None:
     frame_source = build_frame_source(
         source_value, width=args.width, height=args.height, pacing=pacing
     )
-    runner = TemporalRoiRunner(
-        pipeline, detector_refresh_interval=args.detector_refresh_interval
+    runner = TemporalRoiRunner(pipeline, detector_refresh_interval=args.detector_refresh_interval)
+    endpoint_base = args.endpoint.rstrip("/")
+    control_publisher = IpcPublisher(f"{endpoint_base}/control")
+    preview_publisher = IpcPublisher(f"{endpoint_base}/preview")
+    print(
+        f"source: {source_value} (pacing={pacing.value}) -> "
+        f"control={control_publisher.endpoint} preview={preview_publisher.endpoint}"
     )
-    publisher = IpcPublisher(args.endpoint)
-    print(f"source: {source_value} (pacing={pacing.value}) -> {args.endpoint}")
     frame_index = 0
+    last_preview_sent_s: float | None = None
     started = time.perf_counter()
     try:
         while not args.max_frames or frame_index < args.max_frames:
@@ -603,29 +745,51 @@ def main() -> None:
             if not ok:
                 print(f"frame source exhausted (EOF) after {frame_index} frames")
                 break
+            capture_monotonic_ns = time.perf_counter_ns()
+            capture_unix_ns = time.time_ns()
             result = runner.process(frame)
-            encoded_ok, encoded = cv2.imencode(
-                ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, args.jpeg_quality]
-            )
-            if not encoded_ok:
-                raise RuntimeError("failed to encode frame")
-            publisher.publish(
-                {
-                    "frame_index": frame_index,
-                    "faces": [
-                        {"score": float(face.score), "landmarks": face.points.tolist()}
-                        for face in result.faces
-                    ],
-                    "frame_jpeg_base64": base64.b64encode(encoded).decode("ascii"),
-                }
-            )
+            inference_monotonic_ns = time.perf_counter_ns()
+            inference_unix_ns = time.time_ns()
+            face = result.faces[0] if result.faces else None
+            if face is not None:
+                # A miss (face is None) is simply not published this frame: the control
+                # wire format only carries finite landmark coordinates (protocol.py
+                # rejects NaN/Inf), so there is nothing valid to send. A *sustained* miss
+                # is surfaced by the server's own stale-input timeout
+                # (RuntimeCoordinator.stale_after_s); a single skipped frame here is
+                # invisible at video frame rate.
+                packet = build_control_packet(
+                    face,
+                    sequence=frame_index,
+                    capture_monotonic_ns=capture_monotonic_ns,
+                    capture_unix_ns=capture_unix_ns,
+                    inference_monotonic_ns=inference_monotonic_ns,
+                    inference_unix_ns=inference_unix_ns,
+                )
+                control_publisher.publish_bytes(
+                    encode_control_packet(packet), content_type="application/octet-stream"
+                )
+            now_s = time.perf_counter()
+            if _should_publish_preview(now_s, last_preview_sent_s):
+                last_preview_sent_s = now_s
+                running_fps = frame_index / max(now_s - started, 1e-6)
+                landmarks_xy = face.points[:, :2] if face is not None else None
+                preview_bytes = encode_preview_frame(
+                    frame,
+                    landmarks_xy,
+                    f"IPC {running_fps:.1f} FPS",
+                    jpeg_quality=args.jpeg_quality,
+                )
+                # Preview publish failures must never stop the control lane above.
+                publish_preview_best_effort(preview_publisher, preview_bytes)
             frame_index += 1
             if frame_index % 30 == 0:
                 fps = frame_index / max(time.perf_counter() - started, 1e-6)
                 print(f"published={frame_index}  faces={len(result.faces)}  {fps:.1f} FPS")
     finally:
         frame_source.close()
-        publisher.close()
+        control_publisher.close()
+        preview_publisher.close()
 
 
 if __name__ == "__main__":
