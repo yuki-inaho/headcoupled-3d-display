@@ -212,8 +212,29 @@ r = (I - d d^T) (q_C - e_C)
 - 頭部正面軸補正
 - 個人較正品質
 
+### SceneProfile
+
+- 点群アセットのURLパス
+- 画面座標のアンカー `anchor_display_m`（既定 `(0, 0, 0)` = 表示エリア中心の画面表面）
+- 表示上の最長辺 `longest_edge_m`（既定 0.24 m）
+- グリッド間隔 `grid_spacing_m`（既定 0.05 m）
+- 後壁 `back_wall_z_m`（既定 -0.30 m、画面より奥）
+- 床 `floor_y_m` と `floor_near_z_m` / `floor_far_z_m`
+
+SceneProfileはHardwareProfileと**必ず別ファイル**に保ちます。前者は「何をどこに描くか」という
+表示上の選択、後者は較正結果です。同じファイルに入れると、被写体を変えただけの差分と
+実測値を変えた差分が見分けられなくなります。
+
+レンダラーは配置定数を持ちません。読み込み時に点群のAABBを求め、
+`T(anchor) · S · T(-aabb_center)` を一度だけ組み立てます。中心はAABBの中点であり重心では
+ありません。重心は点密度に追従するため、走査の粗密で画面内の位置が動いてしまいます。
+
+既定値では点群が `z ∈ [-0.072, +0.072] m` に収まり、**画面面 z=0 を貫通**します。これにより
+同一被写体の前面（z>0、頭と逆に動く）と背面（z<0、頭に追従する）で逆向きの視差が同時に
+観察でき、投影が正しいかを目視でも数値でも確認できます。
+
 カメラを動かした場合はHardwareProfileを更新し、利用者だけが変わる場合はUserProfileだけを
-切り替えます。
+切り替え、表示内容だけが変わる場合はSceneProfileだけを差し替えます。
 
 ## 9. 実行時通信
 
@@ -236,7 +257,7 @@ JPEGバイナリです。Base64化せず、姿勢配信と分離します。
 ```text
 headcoupled-3d-display/
 ├── src/headcoupled_display/      制御/API/較正/表示
-├── config/                       ハードウェア・利用者プロファイル
+├── config/                       ハードウェア・利用者・シーンプロファイル
 ├── components/tagcal/            添付内部較正ツール
 ├── components/facemesh_tracking/ 添付FaceMeshツール
 ├── tests/                        単体/API/E2E

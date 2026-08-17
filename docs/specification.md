@@ -38,7 +38,7 @@
 {
   "schema_version": 1,
   "profile_id": "device-id",
-  "provenance": "measured | estimated_from_head_targets | synthetic_demo_not_measured",
+  "provenance": "measured | estimated_from_head_targets | synthetic_demo_not_measured | user_confirmed_mount_synthetic_intrinsics",
   "display": {
     "pixel_width": 2560,
     "pixel_height": 1440,
@@ -71,6 +71,47 @@
 1. `camera_to_display_matrix` があればそれを使用。
 2. なければ `camera_mount` から構成。
 3. UI表示値は、最終的に選択された行列から逆算。
+
+同梱プロファイル:
+
+| ファイル | provenance | 内容 |
+| :--- | :--- | :--- |
+| `config/hardware_profile.demo.json` | `synthetic_demo_not_measured` | 動作確認用の人工値（上20 cm、下向き10°） |
+| `config/hardware_profile.local.json` | `user_confirmed_mount_synthetic_intrinsics` | 実機で確認した設置値（水平中央、上15 cm、前後0 cm、下向き12°） |
+
+`user_confirmed_mount_synthetic_intrinsics` は「設置は実機確認済みだが、カメラ内部パラメータ
+`K, D` と表示サイズはまだdemoのプレースホルダ」を表します。全項目が実測になるまで `measured`
+を名乗らせないための区別です。`forward_offset_m = 0.0` は録画検証用の明示値であり、実レンズ中心が
+画面より手前であれば実カメラ受け入れ前に実測して更新します。
+
+## 3.1 シーンプロファイル
+
+```json
+{
+  "schema_version": 1,
+  "scene_id": "bunny-on-display-plane",
+  "point_cloud_asset": "/static/assets/bunny.pcd",
+  "anchor_display_m": [0.0, 0.0, 0.0],
+  "longest_edge_m": 0.24,
+  "grid_spacing_m": 0.05,
+  "back_wall_z_m": -0.3,
+  "floor_y_m": -0.14,
+  "floor_near_z_m": 0.05,
+  "floor_far_z_m": -0.3
+}
+```
+
+較正結果ではなく表示上の選択であるため、ハードウェアプロファイルとは別ファイルに保ちます。
+探索順は `HEADCOUPLED_SCENE` → `./config/scene_profile.default.json` → パッケージ同梱リソース
+の明示順で、カレントディレクトリへの暗黙fallbackは作りません。
+
+拒否条件（いずれも明示エラー）:
+
+- 未知のキー
+- `longest_edge_m` または `grid_spacing_m` が0以下
+- `back_wall_z_m` が0以上（後壁が画面より観察者側にある）
+- `floor_far_z_m >= floor_near_z_m`（床が観察者側へ伸びている）
+- `floor_far_z_m < back_wall_z_m`（床が後壁を越えている）
 
 ## 4. 利用者プロファイルの個人顔モデル
 
