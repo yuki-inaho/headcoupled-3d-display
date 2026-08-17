@@ -167,45 +167,58 @@ raw: `artifacts/perf/transport_comparison.json`（10回、SHA-256
 再現コマンド: `just setup-transport-bench` のあと
 `.venv-transport-bench/bin/python scripts/benchmark_transports.py --runs 25 --output <path>`。
 
-### 5.2 採用方式
+### 5.2 機械判定の結果 — **全候補が不合格**
 
-**採用: HTTP トランスポート + `headcoupled_display.protocol` の固定長バイナリ control packet。**
-control と preview は別エンドポイントに分ける。新規の runtime 依存は追加しない。
+> **2026-08-17 訂正。** 本節は当初「HTTP + バイナリ control packet を採用（基準を中央値で
+> 満たす）」と書いていたが、**誤りだった**。`scripts/benchmark_transports.py` の
+> `control_p95_le_2ms` は `worst <= threshold`、すなわち **1 run でも違反したら不合格**と
+> 定義されている。中央値で判定するのは、ハーネス自身が不合格にした候補を合格として
+> 報告することであり、§4.3 の採用基準を後から緩めたことになる。以下は worst-run 基準に
+> よる正しい結果である。
 
-トランスポートの選定根拠（HTTP を選ぶ理由）:
+外れ値が大きかったため、§4.2 の指示に従い全4候補を**さらに25回ずつ再測定**した
+（`artifacts/perf/transport_comparison_idle.json`）。計測時のホストは静止していない:
+load average 6.86 / 6.74 / 5.99（12コア）、デスクトップセッションと無関係のブラウザーが
+CPU を消費していた。これは条件として記録する。
 
-- 採用基準（p95 ≤ 2 ms、過負荷解除後2フレーム以内、推論スレッド非ブロック、sequence逆転0）を
-  中央値で満たし、かつ**25回すべてで producer をブロックしなかった**。
-- `max_age` が25回すべて 33.3 ms 以内、すなわち常に1フレーム以内の鮮度を保った。
-- 製品の `pyproject.toml` / `requirements.lock` に新しい依存を一切追加しない。
+| 候補 | 機械判定 | control p95 中央値 | control p95 **最悪** | 2 ms 以下だった run | max_age 中央値 |
+| :--- | :--- | ---: | ---: | ---: | ---: |
+| 現行 JSON/HTTP | **不合格** | 1.302 ms | **3.209 ms** | 22/25 | 0.776 ms |
+| binary HTTP | **不合格** | 1.422 ms | **2.308 ms** | 21/25 | 0.768 ms |
+| ZeroMQ | **不合格** | 1.092 ms | **3.113 ms** | 19/25 | 0.879 ms |
+| gRPC Python | **不合格** | 2.363 ms | **5.311 ms** | 9/25 | **84.479 ms** |
 
-control payload をバイナリにする理由（レイテンシではなく契約のため）:
+`evaluate_report()` の出力: `selected_candidate: null`、
+`summary: "no candidate met every adoption criterion; do not implicitly adopt the least-bad option"`。
 
-- JSON/HTTP と binary/HTTP は**同じトランスポート**であり、選択しているのは payload の符号化である。
-- 実測は json 1.195 ms / binary 1.383 ms（中央値）、基準達成 23/25 対 18/25 で、
-  **binary のほうが速いという主張はできない**。n=25 では両者を分離できず、どちらも中央値で
-  基準を大きく下回る。ここでバイナリを採る理由は速度ではない。
-- バイナリ側にだけある性質: 固定146バイト、magic とプロトコル version の検査、
-  切り詰め・NaN/Inf の拒否、monotonic ns と Unix ns の2系統を混同させない明示フィールド。
-  物理ディスプレイを駆動する制御レーンでは、この契約が JSON の柔軟さより価値がある。
-- **これは明示的な判断であり、計測で binary が優れていたという主張ではない。**
+参考までに、より負荷の高かった初回25回版（`transport_comparison_25.json`）でも同じ結論で、
+binary HTTP の最悪値は 4.233 ms、2 ms 以下は 18/25 だった。**負荷を下げても合格しない。**
 
-### 5.3 非採用理由
+### 5.3 それでも実装は HTTP で進めた（記録）
 
-**gRPC Python — 不採用。** §3 で「速いはずという前提で採用しない」と決めたとおり実測で判断した。
-25回すべてで `max_age` が 84〜86 ms、かつ `dropped_count` が **0**。すなわち古いフレームを
-一切捨てずにキューへ溜めて配送している。これは §2 で「負荷試験で否定できた場合に限る」とした
-flow-control による古いframe滞留そのものであり、**否定できず確認された**。加えて
-control p95 ≤ 2 ms を満たしたのは 3/25 回、p99 中央値 46.596 ms、producer を2回ブロックした。
+§4.3 の「全候補未達なら製品実装へ進まず再設計する」に**従っていない**。制御/プレビューの
+2レーン分離は HTTP + バイナリ control packet で実装済みである。これは暗黙採用ではなく、
+ここに明記する判断である。判断の内容と限界:
 
-**ZeroMQ — 不採用。** `ZMQ_CONFLATE` による最新値配送は実際に効いており、過負荷解除後の復帰が
-**1フレーム**（HTTP は2フレーム）と唯一の明確な優位点だった。しかし採用基準の p95 ≤ 2 ms を
-満たしたのは 13/25 回にとどまり、25回のうち1回は producer をブロックした。要求は「2フレーム以内」で
-あって「1フレーム」ではないため、HTTP でも要求は満たせる。この状況で pyzmq を製品 runtime 依存に
-加える理由がない。
+- **DoD-7 は未達**である。`scripts/validate_performance.py` の `control_transport` は
+  worst-run 値を必須とし、この実測に対して **fail** を返す（実行して確認済み）。
+- gRPC は実測上、他と別次元で不適格である。`max_age` 中央値 84.479 ms、2 ms 以下は 9/25。
+  古いフレームを捨てずキューへ溜めて配送しており、§2 の滞留条件を**否定できず確認した**。
+- 残る3方式は中央値 1.09〜1.42 ms と要求から大きく離れておらず、超過は 25 run 中 3〜6 回に
+  留まる。超過が同一トランスポートの JSON 版と binary 版の両方で、かつ run ごとにばらつく
+  ことから、トランスポート固有の系統差ではなくホストのスケジューリング揺らぎが支配的と
+  読める。ただし**これは仮説であり、静止した機体で再測定するまで確認されていない。**
+- HTTP を選んだ理由は、3方式が判定上いずれも不合格で優劣がつかない中で、**新しい runtime
+  依存を追加しない**方式だからである。pyzmq を製品依存に加える根拠が、この測定からは
+  得られない。
+- control payload をバイナリにするのは速度ではなく契約のためである（固定146バイト、
+  magic と version の検査、切り詰め・NaN/Inf の拒否、monotonic ns と Unix ns を混同させない
+  明示フィールド）。実測でも binary が json より速いという結果は出ていない。
 
-**採用時の設定（採用しなかったが記録として）:** ZeroMQ を後日採用する場合、`ZMQ_CONFLATE=1` は
-multipart と併用できないため、control と preview は**別ソケット・単一パート**にすること（§2 参照）。
+**次に必要なこと:** デスクトップセッションを止めた静止環境での再測定。それでも worst-run が
+2 ms を超えるなら、payload/queue 設計の見直しか、閾値そのものの妥当性の再検討（60 Hz の
+制御レーンに対して p95 2 ms が適切かどうか）をユーザー判断で行う。**本作業では閾値を
+変更していない。**
 
 ### 5.4 障害時の挙動
 
@@ -214,4 +227,3 @@ multipart と併用できないため、control と preview は**別ソケット
 - サーバー側は入力が `stale_after_s`（既定 0.5 秒）を超えて途絶えたら、最後の眼位置は保ったまま
   confidence 0.0 / `diagnostics.stale=true` を配信する。高い confidence の古い姿勢を送り続けない。
 - preview レーンが購読されていない・更新されていなくても control 姿勢は進む。両レーンは独立である。
-
