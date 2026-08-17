@@ -87,7 +87,11 @@ function connectPose() {
     const message = JSON.parse(event.data);
     if (message.type !== "tracking") return;
     const pose = message.payload;
-    renderer?.setEye(pose.cyclopean_eye_display_m, pose.sequence);
+    renderer?.setEye(
+      pose.cyclopean_eye_display_m,
+      pose.sequence,
+      pose.diagnostics?.producer_inference_unix_ns ?? null,
+    );
     byId("pose-sequence").dataset.sequence = String(pose.sequence);
     setText("pose-sequence", `#${pose.sequence}`);
     setText("confidence", format(pose.confidence, 2));

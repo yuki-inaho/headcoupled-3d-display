@@ -269,6 +269,7 @@ export class PointCloudRenderer {
     this.lastRenderedSequence = null;
     this.sequenceReversalCount = 0;
     this.latestReceivedAtMs = null;
+    this.latestInferenceUnixMs = null;
 
     // Rolling receive-to-draw / CPU-draw timing samples, timestamped with
     // performance.timeOrigin + performance.now() so they are directly comparable to
@@ -442,7 +443,16 @@ export class PointCloudRenderer {
    * whatever order messages happen to arrive in. sequenceReversalCount makes that
    * (otherwise silent) drop observable.
    */
-  setEye(eye, sequence) {
+  /**
+   * @param {number[]} eye - cyclopean eye position in display metres
+   * @param {number} sequence - producer frame number, used to reject reordered poses
+   * @param {number|null} [inferenceUnixNs] - when the producer finished inference, on the
+   *   Unix clock. Comparable to `performance.timeOrigin + performance.now()` (modulo
+   *   ordinary clock-sync error) and therefore the only pair from which
+   *   recognition-to-WebGL latency can be derived. The producer's monotonic readings
+   *   belong to another process and must never be subtracted from a browser timestamp.
+   */
+  setEye(eye, sequence, inferenceUnixNs = null) {
     if (!Array.isArray(eye) || eye.length !== 3 || eye.some((value) => !Number.isFinite(value))) return;
     if (Number.isFinite(sequence) && this.latestSequence !== null && sequence < this.latestSequence) {
       this.sequenceReversalCount += 1;
@@ -452,6 +462,10 @@ export class PointCloudRenderer {
     this.eye = [...eye];
     if (Number.isFinite(sequence)) this.latestSequence = sequence;
     this.latestReceivedAtMs = performance.timeOrigin + performance.now();
+    this.latestInferenceUnixMs =
+      typeof inferenceUnixNs === "number" && Number.isFinite(inferenceUnixNs)
+        ? inferenceUnixNs / 1e6
+        : null;
     this.scheduleDraw();
   }
 
@@ -612,7 +626,14 @@ export class PointCloudRenderer {
     const cpuDrawMs = drawEndMs - drawStartMs;
     const receiveToDrawMs =
       this.latestReceivedAtMs === null ? null : drawStartMs - this.latestReceivedAtMs;
-    this.timingRing[this.timingRingIndex] = { drawStartMs, cpuDrawMs, receiveToDrawMs };
+    const inferenceToDrawMs =
+      this.latestInferenceUnixMs === null ? null : drawStartMs - this.latestInferenceUnixMs;
+    this.timingRing[this.timingRingIndex] = {
+      drawStartMs,
+      cpuDrawMs,
+      receiveToDrawMs,
+      inferenceToDrawMs,
+    };
     this.timingRingIndex = (this.timingRingIndex + 1) % this.timingRing.length;
   }
 
@@ -635,6 +656,9 @@ export class PointCloudRenderer {
     const receive = samples
       .map((entry) => entry.receiveToDrawMs)
       .filter((value) => value !== null);
+    const inference = samples
+      .map((entry) => entry.inferenceToDrawMs)
+      .filter((value) => value !== null && value !== undefined);
     // Interval between consecutive draws. With a dirty scheduler every draw waits for
     // the next requestAnimationFrame, so this is the display/compositor cadence and it
     // is the floor under receiveToDraw: a pose can never be shown sooner than the next
@@ -651,6 +675,9 @@ export class PointCloudRenderer {
       cpuDrawP95Ms: percentile(cpu, 0.95),
       receiveToDrawP50Ms: percentile(receive, 0.5),
       receiveToDrawP95Ms: percentile(receive, 0.95),
+      inferenceSampleCount: inference.length,
+      inferenceToDrawP50Ms: percentile(inference, 0.5),
+      inferenceToDrawP95Ms: percentile(inference, 0.95),
       drawCount: this.drawCount,
       sequenceReversalCount: this.sequenceReversalCount,
       lastRenderedSequence: this.lastRenderedSequence,
