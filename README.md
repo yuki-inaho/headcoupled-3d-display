@@ -5,7 +5,3 @@
      ローカル完結にするなら docs/assets/ へ置いて相対パスで参照する。 -->
 
 <video src="" controls muted playsinline width="720"></video>
-
----
-
-[`docs/ONBOARDING.md`](docs/ONBOARDING.md)
