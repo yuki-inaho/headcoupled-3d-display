@@ -38,7 +38,11 @@ ARTIFACTS = ROOT / "artifacts" / "perf"
 FACEMESH_PROJECT = Path(
     os.getenv("FACEMESH_TRACKING_PROJECT", str(ROOT.parent / "facemesh_tracking"))
 )
-RECORDING = FACEMESH_PROJECT / "recordings" / "test10.avi"
+#: The operator's own recording. Deliberately not named in the repository -- point
+#: HEADCOUPLED_RECORDING at it. Absent, this suite fails loudly rather than skipping:
+#: see `require_prerequisites`, an unmeasured run must never read as a pass.
+_RECORDING_ENV = os.getenv("HEADCOUPLED_RECORDING", "")
+RECORDING = Path(_RECORDING_ENV) if _RECORDING_ENV else None
 PERSONAL_MESH = FACEMESH_PROJECT / "recordings" / "me" / "shape.pcd"
 INTRINSICS = Path(
     os.getenv(
@@ -83,6 +87,13 @@ def wait_for_server(url: str, process: subprocess.Popen[str], timeout_s: float =
 
 
 def require_prerequisites() -> None:
+    if RECORDING is None:
+        raise RuntimeError(
+            "recorded CUDA acceptance needs a recording, and HEADCOUPLED_RECORDING is not "
+            "set. The file is the operator's own footage and is deliberately not named in "
+            "this repository -- point that variable at it. This run proves nothing and "
+            "must not be reported as a skip"
+        )
     missing = [str(path) for path in (RECORDING, PERSONAL_MESH, INTRINSICS) if not path.is_file()]
     if missing:
         raise RuntimeError(

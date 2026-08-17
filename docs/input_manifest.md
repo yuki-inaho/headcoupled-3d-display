@@ -19,8 +19,8 @@
 
 | パス | 用途 | 備考 |
 | :--- | :--- | :--- |
-| `/home/inaho-omen/Project/facemesh_tracking/recordings/test10.avi` | 段階別レイテンシ、精度スイープ、録画E2E | 1280×720、**実デコード294フレーム**。ヘッダは 602 frame / 60 fps と申告するが信用しない |
-| `/home/inaho-omen/Project/facemesh_tracking/outputs/test10_landmarks.json` | 保存済みlandmarks replay | 同じ録画の478点×294フレーム |
+| `$HEADCOUPLED_RECORDING`（実利用者の録画。撮影者が写るためリポジトリには含めず、パスも記載しない） | 段階別レイテンシ、精度スイープ、録画E2E | 1280×720、**実デコード294フレーム**。ヘッダは 602 frame / 60 fps と申告するが信用しない |
+| `$HEADCOUPLED_LANDMARKS`（同じ録画から生成した保存済みlandmarks） | 保存済みlandmarks replay | 同じ録画の478点×294フレーム |
 | `/home/inaho-omen/Project/facemesh_tracking/recordings/me/shape.pcd` | 個人用478点メッシュ | **生体情報**。`.gitignore` 対象であり、リポジトリへ入れない |
 | `/home/inaho-omen/Project/apriltag-camera-calibrator/artifacts/eval_refine/calibration.json` | カメラ内部パラメータ `K, D` | 1280×720、RMS 1.0429 px。録画時 focus 332 / 較正時 focus 256 の不一致が残る |
 

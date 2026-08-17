@@ -26,7 +26,7 @@ RESOLUTION = FrameResolution(width_px=1280, height_px=720)
 def _valid_report_kwargs(**overrides: object) -> dict:
     kwargs: dict = {
         "commit": "abc1234",
-        "source": "/home/inaho-omen/Project/facemesh_tracking/recordings/test10.avi",
+        "source": "/recordings/session.avi",
         "provider": "CUDAExecutionProvider",
         "resolution": RESOLUTION,
         "frame_count": 294,
@@ -49,7 +49,7 @@ def test_report_round_trips_and_exposes_required_fields() -> None:
     report = build_performance_report(**_valid_report_kwargs())
 
     assert report.commit == "abc1234"
-    assert report.source.endswith("test10.avi")
+    assert report.source.endswith("session.avi")
     assert report.provider == "CUDAExecutionProvider"
     assert report.resolution.width_px == 1280
     assert report.resolution.height_px == 720

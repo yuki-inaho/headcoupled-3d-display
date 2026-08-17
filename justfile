@@ -127,14 +127,16 @@ task name *args:
 # Absolute path to the recorded test video and the default location for its raw
 # (pre-validation) per-stage latency samples, shared by benchmark-recorded and
 # summarize-performance below (workdoc Aug17-2026 Step 7).
-test10_video := facemesh_project / "recordings/test10.avi"
+# The recording is the operator's own footage and is deliberately not named here.
+# Point HEADCOUPLED_RECORDING at it, or pass video=<path> to the recipes below.
+recording_video := env_var_or_default("HEADCOUPLED_RECORDING", "")
 baseline_recorded_raw := root / "artifacts/perf/baseline_recorded_raw.json"
 
 # Step 7: record per-stage latency samples against a recorded video. Must run inside
 # facemesh_tracking's own Python 3.10 / CUDA environment (this recipe cd's into it and
 # uses `uv run`, not {{python}}) because pydantic/beartype are not installed there.
 # Writes raw, not-yet-schema-validated JSON; follow with `just summarize-performance`.
-benchmark-recorded video=test10_video output=baseline_recorded_raw *extra:
+benchmark-recorded video=recording_video output=baseline_recorded_raw *extra:
     cd {{facemesh_project}} && PYTHONPATH={{root}} uv run python {{root}}/scripts/benchmark_recorded.py --video {{video}} --output {{output}} {{extra}}
 
 # Step 7: validate benchmark-recorded's raw JSON against headcoupled_display.performance's
@@ -150,7 +152,7 @@ summarize-performance raw=baseline_recorded_raw *extra:
 sweep_raw := root / "artifacts/perf/refresh_sweep_raw.json"
 sweep_report := root / "artifacts/perf/refresh_sweep.json"
 
-sweep-refresh video=test10_video output=sweep_raw *extra:
+sweep-refresh video=recording_video output=sweep_raw *extra:
     cd {{facemesh_project}} && uv run python {{root}}/scripts/sweep_detector_refresh.py --video {{video}} --output {{output}} {{extra}}
 
 # Step 27: choose the interval from the sweep, or refuse if none meets every threshold.

@@ -192,7 +192,7 @@ def publish_preview_best_effort(
 #: (iris left, iris right, nose tip, mouth-corner left, mouth-corner right) from the
 #: previous frame's dense V2_478 mesh, in the same order as the detector's own keypoints.
 #: This mapping was confirmed by comparing the detector's 5 points against V2_478
-#: landmarks on test10.avi frame 41: point index 4 matched the detector's nose point
+#: landmarks on the reference recording, frame 41: point index 4 matched the detector's nose point
 #: (d=1.8px) far better than index 1 (d=13.1px), which the earlier workdoc draft assumed.
 ROI_ALIGNMENT_LANDMARK_INDICES: tuple[int, int, int, int, int] = (468, 473, 4, 61, 291)
 
@@ -207,7 +207,7 @@ _MIN_POINTS_FOR_ROI_ALIGNMENT = max(ROI_ALIGNMENT_LANDMARK_INDICES) + 1
 DEFAULT_MIN_LANDMARK_SCORE: float = 0.5
 
 #: Conservative default: refresh (full-detect) every single frame, i.e. the temporal ROI
-#: shortcut is off by default. Workdoc step 27 explores 1/2/3/5/8/10 on test10.avi and
+#: shortcut is off by default. Workdoc step 27 explores 1/2/3/5/8/10 on the reference recording and
 #: picks a value from measured accuracy/latency, so this default is deliberately *not* a
 #: performance guess -- it is the safe fallback if step 27 is never run.
 DEFAULT_DETECTOR_REFRESH_INTERVAL = 1
@@ -259,7 +259,7 @@ class TemporalRoiRunner:
     produced. Each subsequent landmark-only frame maps the anchor's detector box (and
     keypoints) through the per-axis scale+translate that takes the anchor's landmark box
     to the *current* (most recently available) landmark box, and uses the mapped result
-    as the ROI. This is deliberate, not incidental: on test10.avi the detector's box and
+    as the ROI. This is deliberate, not incidental: on the reference recording the detector's box and
     the plain landmark-point bounding box are measurably different shapes (mean
     (x1,y1,x2,y2) offset roughly (+2.5, -36, -3.6, -9.6) px, height ratio ~1.07, width
     ratio ~0.98) -- UniFace crops+aligns using the *detector's* box, so feeding the
@@ -503,7 +503,7 @@ def _check_resolution(
 
     Checked against the frame OpenCV actually decoded, never against container/camera
     metadata: this producer must not trust header claims about resolution any more than
-    it trusts header frame counts (test10.avi's header lies about both frame count and
+    it trusts header frame counts (the reference recording's header lies about both frame count and
     FPS -- 602 frames / 60 FPS claimed, 294 frames / unknown-true-FPS actually decode).
     """
     actual_height, actual_width = frame.shape[:2]
@@ -549,12 +549,12 @@ class CameraFrameSource:
 
 @dataclass
 class VideoFileFrameSource:
-    """Frames from a recorded video file (workdoc step 28-29, e.g. ``test10.avi``).
+    """Frames from a recorded video file (workdoc step 28-29), given by ``--source``.
 
     End-of-stream is decided solely by ``cv2.VideoCapture.read()`` returning ``False``.
     The container header's frame count / FPS are read only for realtime pacing's actual
     interval, never as a substitute for "how many frames does this file have" -- e.g.
-    test10.avi's header claims 602 frames / 60 FPS but only 294 frames actually decode.
+    The reference recording's header claims 602 frames / 60 FPS but only 294 frames decode.
 
     ``now_fn``/``sleep_fn`` are injectable (default ``time.perf_counter``/``time.sleep``)
     so unit tests can verify realtime pacing without a real wall-clock wait.
@@ -595,7 +595,7 @@ class VideoFileFrameSource:
         if self.pacing is Pacing.REALTIME:
             # Simple fixed-interval pacing relative to this read, not drift-compensated
             # against an absolute start time -- adequate for the short recordings this
-            # producer targets (test10.avi replay, not long-running unattended capture).
+            # producer targets (recorded replay, not long-running unattended capture).
             self._next_due = self.now_fn() + self._frame_interval
         return True, frame
 
@@ -631,7 +631,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Frame input (workdoc steps 28-29): a V4L2 path (e.g. /dev/video0, the "
             "default), a numeric camera index (e.g. 0), or the path to an existing "
-            "recorded video file (e.g. recordings/test10.avi). Dispatch is explicit: a "
+            "recorded video file. Dispatch is explicit: a "
             "purely decimal string is always a camera index, an existing file is always "
             "a recorded video, anything else is a camera device path -- never a guess."
         ),
@@ -664,7 +664,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "the previous frame's landmarks for a landmark-only ROI estimate instead "
             "(temporal ROI, workdoc steps 25-26). Default 1 means 'every frame' (the "
             "ROI shortcut is off) -- this is a conservative default, not a performance "
-            "recommendation; workdoc step 27 sweeps 1/2/3/5/8/10 on test10.avi and "
+            "recommendation; workdoc step 27 sweeps 1/2/3/5/8/10 on the reference recording and "
             "picks a value from measured accuracy/latency."
         ),
     )

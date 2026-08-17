@@ -2,7 +2,7 @@
 
 These tests exercise only the pure raw-JSON -> ``PerformanceReport`` transformation
 and the markdown/report I/O helpers in ``scripts/summarize_performance.py``. They
-never require a real GPU or ``recordings/test10.avi``: a small synthetic raw
+never require a real GPU or the operator's recording: a small synthetic raw
 benchmark dict (shaped like ``scripts/benchmark_recorded.py``'s output, but with
 tiny sample counts) stands in as a fixture.
 
@@ -36,7 +36,7 @@ def _raw_record(**overrides: object) -> dict[str, Any]:
         "commit": "abc1234",
         "facemesh_tracking_commit": "def5678",
         "facemesh_tracking_dirty": True,
-        "source": "/home/inaho-omen/Project/facemesh_tracking/recordings/test10.avi",
+        "source": "/recordings/session.avi",
         "provider": "CUDAExecutionProvider",
         "providers_by_stage": {
             "detector": ["CUDAExecutionProvider", "CPUExecutionProvider"],
@@ -99,7 +99,7 @@ def test_build_report_from_raw_produces_valid_performance_report() -> None:
 
     assert isinstance(report, PerformanceReport)
     assert report.commit == "abc1234"
-    assert report.source.endswith("test10.avi")
+    assert report.source.endswith("session.avi")
     assert report.provider == "CUDAExecutionProvider"
     assert report.resolution.width_px == 1280
     assert report.resolution.height_px == 720

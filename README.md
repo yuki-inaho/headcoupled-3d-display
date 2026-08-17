@@ -134,7 +134,7 @@ just check
 生サンプルの採取と、スキーマ検証つき集計を分けています。
 
 ```bash
-just benchmark-recorded      # 3.10側: test10.avi の段階別レイテンシ生サンプルを採取
+just benchmark-recorded      # 3.10側: 録画($HEADCOUPLED_RECORDING)の段階別レイテンシ生サンプルを採取
 just summarize-performance   # 3.13側: スキーマ検証して artifacts/ と docs/performance_results.md へ
 ```
 

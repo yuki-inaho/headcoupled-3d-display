@@ -31,7 +31,7 @@ def report(**overrides: object) -> dict[str, object]:
     base: dict[str, object] = {
         "schema_version": 1,
         "commit": "0" * 40,
-        "source": "/tmp/test10.avi",
+        "source": "/tmp/session.avi",
         "provider": "CUDAExecutionProvider",
         "resolution": {"width_px": 1280, "height_px": 720},
         "frame_count": REQUIRED_FRAME_COUNT,

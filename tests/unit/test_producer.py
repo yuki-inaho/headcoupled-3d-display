@@ -437,7 +437,7 @@ def test_temporal_roi_runner_keypoints_order_is_468_473_4_61_291() -> None:
 
 def test_temporal_roi_runner_roi_propagates_detector_box_not_landmark_box() -> None:
     """The landmark-only ROI must be the *propagated detector box*, not the plain
-    landmark bounding box -- on test10.avi the two differ by tens of pixels (see the
+    landmark bounding box -- on the operator's recording the two differ by tens of pixels (see the
     TemporalRoiRunner class docstring), so silently using the landmark box would drift
     the estimator's crop away from what the detector itself would have produced."""
     anchor_landmark_xy = _spread_xy(x0=60.0, x1=140.0, y0=60.0, y1=140.0)  # box (60,60,140,140)

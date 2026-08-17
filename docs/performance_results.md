@@ -9,9 +9,9 @@ raw JSON は `.gitignore` 対象の `artifacts/perf/` 配下に保存され、�
 
 ### 手順7: 現行録画ベースライン — 2026-08-17T06:42:42.772858+00:00 (commit `4608c427ba57`)
 
-- **コマンド:** `PYTHONPATH=/home/inaho-omen/Project/headcoupled-3d-display uv run python /home/inaho-omen/Project/headcoupled-3d-display/scripts/benchmark_recorded.py --video recordings/test10.avi --output /home/inaho-omen/Project/headcoupled-3d-display/artifacts/perf/baseline_recorded_raw.json`
+- **コマンド:** `just benchmark-recorded    # video は $HEADCOUPLED_RECORDING、output は artifacts/perf/baseline_recorded_raw.json`
 - **commit:** `4608c427ba57ffe88c65e5dcb1131f0c7e48dc77`
-- **入力:** `/home/inaho-omen/Project/facemesh_tracking/recordings/test10.avi` (1280x720, frame_count=294, warmup=5)
+- **入力:** `$HEADCOUPLED_RECORDING` (1280x720, frame_count=294, warmup=5)
 - **provider:** `CUDAExecutionProvider`
 - **clock_domain:** `monotonic_ns` (uncertainty 0.000001 ms)
 - **raw JSON:** `artifacts/perf/baseline_recorded_raw.json` (SHA-256: `219939e7aacc2fb9a32861e2d67f2fae38791b40f89cda475b95d88629a81b3b`)
@@ -33,7 +33,7 @@ raw JSON は `.gitignore` 対象の `artifacts/perf/` 配下に保存され、�
 ### 手順27: detector-refresh interval のスイープ — 2026-08-17
 
 - **コマンド:** `just sweep-refresh`（3.10側）→ `scripts/analyze_refresh_sweep.py`（3.13側、実 intrinsics と個人メッシュを指定）
-- **入力:** `recordings/test10.avi`（1280×720、実デコード294フレーム、warmup 5）
+- **入力:** `$HEADCOUPLED_RECORDING`（1280×720、実デコード294フレーム、warmup 5）
 - **provider:** `CUDAExecutionProvider`（detector/estimator とも実セッション確認）
 - **精度の基準:** `interval=1`（毎フレーム全検出）。**画素ではなくメートル系の眼位置と前方ベクトル**で比較（製品と同じ `HeadPoseEstimator`）
 - **raw:** `artifacts/perf/refresh_sweep_raw.json`（SHA-256 `f1de61f374522ccbc2697c6017deba7601533032dd7f44d7c64f1d2d51e9d11b`）、
@@ -86,7 +86,7 @@ refresh=1 へ戻して精度を守り、性能未達を記録する。閾値を�
 
 - **コマンド:** `just benchmark-recorded`
 - **commit:** `f6c4abf341c746e47fa22894eb9eb3ac14c08ac1`
-- **入力:** `/home/inaho-omen/Project/facemesh_tracking/recordings/test10.avi` (1280x720, frame_count=294, warmup=5)
+- **入力:** `$HEADCOUPLED_RECORDING` (1280x720, frame_count=294, warmup=5)
 - **provider:** `CUDAExecutionProvider`
 - **clock_domain:** `monotonic_ns` (uncertainty 0.000001 ms)
 - **raw JSON:** `artifacts/perf/baseline_recorded_raw.json` (SHA-256: `9aeb300b3b079fb3d5af4298ff0d1b27298bdcdb317058e55ad29c272b1f1565`)
@@ -139,10 +139,10 @@ CI 機で必ず落ちるテストにも、通るまで閾値を緩めた判定�
 ### 手順40 / 成功条件10: 録画+実CUDA推論の本番相当E2E — 2026-08-17（再測定・訂正）
 
 - **コマンド:** `just test-e2e-recorded-cuda`
-- **経路:** `test10.avi` → **実CUDA FaceMesh推論**（Python 3.10環境）→ 採用IPC（2レーン）→
+- **経路:** 録画(`$HEADCOUPLED_RECORDING`) → **実CUDA FaceMesh推論**（Python 3.10環境）→ 採用IPC（2レーン）→
   12点SQPNP → `/ws/pose` → 非対称投影 WebGL2。**合成入力は一切使用していない。**
 - **プロファイル:** `hardware_profile.local.json`（15 cm / 12°）+ tagcal実測 `K,D` + 個人メッシュ
-- **producer:** `--source test10.avi --pacing realtime --backend cuda --max-frames 120`
+- **producer:** `--source $HEADCOUPLED_RECORDING --pacing realtime --backend cuda --max-frames 120`
 - **raw:** `artifacts/perf/recorded_cuda_e2e.json`
 
 **通ったこと（経路の成立）**
@@ -234,7 +234,7 @@ CPU を消費していた。
 
 - **コマンド:** `just benchmark-recorded (final, after review fixes)`
 - **commit:** `040a4c2a78dc7acbea0522b1ecb4bd9ba1641f93`
-- **入力:** `/home/inaho-omen/Project/facemesh_tracking/recordings/test10.avi` (1280x720, frame_count=294, warmup=5)
+- **入力:** `$HEADCOUPLED_RECORDING` (1280x720, frame_count=294, warmup=5)
 - **provider:** `CUDAExecutionProvider`
 - **clock_domain:** `monotonic_ns` (uncertainty 0.000001 ms)
 - **raw JSON:** `artifacts/perf/baseline_recorded_raw.json` (SHA-256: `325ead08247677a66ace29f880540af10b6f034ed4771e70e805975d12232321`)
