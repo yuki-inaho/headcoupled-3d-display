@@ -105,7 +105,7 @@ justfileを実行確認しました。バイナリは成果物へ同梱してい
 
 - FastAPIサーバー起動と`/api/health`
 - ページ初期化完了
-- ASCII `bunny.pcd` 13,810点読込
+- ASCII `bunny.pcd`（当時の合成bunny、2026-08-17に本物のStanford Bunny 35,947点へ差し替え）13,810点読込
 - 姿勢WebSocketのsequence更新
 - JPEG WebSocketのblob表示
 - 高さ20.0 cm、下向き10.0°のUI表示

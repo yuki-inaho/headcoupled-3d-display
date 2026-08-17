@@ -1,3 +1,12 @@
+# The SHA-256 of every file in the distribution ZIP headcoupled-3d-display.zip
+# (564398e7ea117e669bfcefd306f883368fa31feb76efcaddbcf473ab4cc85ef2) AS RECEIVED.
+#
+# This is a record of what was delivered, not an integrity check of the working tree.
+# 34 of the 102 lines below no longer match, because this project has since modified
+# those files on purpose (see docs/local_setup_notes.md). Do NOT "fix" a mismatch by
+# rewriting a line -- that destroys the only evidence of what the archive contained.
+# To check the current tree instead, generate a separate manifest; leave this one alone.
+#
 229fae95fb61bcccefab3c0f267fdc5929e0b292e2b650e956f3322e5c8b3f5b  .gitignore
 02e735b3dfe1c32833eb550b7ff8ffa17f5f2bc3fa1e7bae61a8f5a3883ce398  .python-version
 8976a5706e40c774215351a74d9c68b0fa0f55cc09fdc20b81721563ca75142b  LICENSE

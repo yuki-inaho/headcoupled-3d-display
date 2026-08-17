@@ -48,7 +48,7 @@
 | 頭部レイ残差 | 点とレイの直交距離をrobust least squaresで最小化 |
 | ハードウェア/利用者分離 | `HardwareProfile`, `UserProfile` |
 | 映像と姿勢の分離 | `/ws/camera`, `/ws/pose` |
-| bunny.pcd | オリジナル人工PCD 13,810点 |
+| bunny.pcd | 本物の Stanford Bunny（`bun_zipper` 再構成、35,947頂点）。当初はオリジナル人工PCD 13,810点（`scripts/generate_bunny.py`）だったが、2026-08-17 に `scripts/import_stanford_bunny.py` で実データへ差し替え。出典・ライセンスは `docs/input_manifest.md` 参照 |
 
 ## 3. FaceMesh追跡リポジトリ
 

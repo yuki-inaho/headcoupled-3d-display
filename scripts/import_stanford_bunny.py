@@ -170,12 +170,13 @@ def sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _parse_vertex_element(lines: Iterator[str], path: Path) -> tuple[int, int, int, int]:
-    """Consume PLY header lines up to and including ``end_header``.
+def _scan_vertex_header(lines: Iterator[str]) -> tuple[int | None, list[str]]:
+    """Scan PLY header lines up to and including ``end_header``.
 
-    Returns ``(vertex_count, x_index, y_index, z_index)`` for the vertex element's
-    property list, e.g. ``x y z confidence intensity`` -> ``(N, 0, 1, 2)``. Split out
-    of `read_ascii_ply_vertices` purely to keep that function's branching simple.
+    Tracks only the vertex element: its declared count and its property names in
+    order, e.g. ``x y z confidence intensity``. Returns ``(None, [])`` if the header
+    never declares ``element vertex`` at all. Split out of `_parse_vertex_element`
+    purely to keep that function's own branching simple.
     """
     vertex_count: int | None = None
     vertex_properties: list[str] = []
@@ -195,18 +196,32 @@ def _parse_vertex_element(lines: Iterator[str], path: Path) -> tuple[int, int, i
             continue
         if stripped == "end_header":
             break
+    return vertex_count, vertex_properties
 
-    if vertex_count is None:
-        raise ValueError(f"no 'element vertex' found in {path}")
+
+def _xyz_property_indices(vertex_properties: list[str], path: Path) -> tuple[int, int, int]:
+    """Look up where x, y and z sit in a vertex element's property list."""
     for axis in ("x", "y", "z"):
         if axis not in vertex_properties:
             raise ValueError(f"vertex element is missing '{axis}': {vertex_properties}")
     return (
-        vertex_count,
         vertex_properties.index("x"),
         vertex_properties.index("y"),
         vertex_properties.index("z"),
     )
+
+
+def _parse_vertex_element(lines: Iterator[str], path: Path) -> tuple[int, int, int, int]:
+    """Consume PLY header lines up to and including ``end_header``.
+
+    Returns ``(vertex_count, x_index, y_index, z_index)`` for the vertex element's
+    property list.
+    """
+    vertex_count, vertex_properties = _scan_vertex_header(lines)
+    if vertex_count is None:
+        raise ValueError(f"no 'element vertex' found in {path}")
+    x_index, y_index, z_index = _xyz_property_indices(vertex_properties, path)
+    return vertex_count, x_index, y_index, z_index
 
 
 def read_ascii_ply_vertices(path: Path) -> np.ndarray:
