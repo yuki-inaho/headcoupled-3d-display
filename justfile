@@ -143,3 +143,22 @@ analyze-refresh raw=sweep_raw output=sweep_report *extra:
 # Step 41: machine-judge the measured reports against the workdoc's thresholds.
 validate-performance *args:
     PYTHONPATH={{root}}/src {{python}} scripts/validate_performance.py {{args}}
+
+# Step 32: isolated pyzmq/grpcio venv for the transport-candidate benchmark. Kept fully
+# separate from the product .venv -- see requirements.transport-bench.in. pyzmq/grpcio
+# must never appear in pyproject.toml or requirements.lock.
+setup-transport-bench:
+    uv venv --python 3.13 .venv-transport-bench
+    uv pip sync --python .venv-transport-bench/bin/python requirements.transport-bench.lock
+
+# Step 33: compare json_http/binary_http/zeromq/grpc under identical control(60Hz)/
+# preview(10Hz)/consumer-stall(100ms) conditions, `runs` repetitions each, and write
+# artifacts/perf/transport_comparison.json. Must run inside .venv-transport-bench (see
+# setup-transport-bench above), not {{python}} -- the product venv never installs
+# pyzmq/grpcio.
+benchmark-transports runs="5" output="artifacts/perf/transport_comparison.json":
+    .venv-transport-bench/bin/python scripts/benchmark_transports.py --runs {{runs}} --output {{output}}
+
+# Step 32: 100-message schema-validation smoke run (all four candidates).
+benchmark-transports-smoke:
+    .venv-transport-bench/bin/python scripts/benchmark_transports.py --smoke --output artifacts/perf/transport_comparison_smoke.json
