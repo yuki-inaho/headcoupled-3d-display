@@ -18,6 +18,7 @@
 | FR-012 | 9点人工データで較正回帰試験を行う | 実装済み |
 | FR-013 | 人工値と実測値の出自をUI/APIへ表示する | 実装済み |
 | FR-014 | Playwright APIおよびCLIでUIを試験する | 実装済み |
+| FR-015 | 録画映像とFaceMesh保存JSONを同じ3D表示経路で再生する | 実装済み |
 
 ## 2. 非機能要件
 
@@ -29,6 +30,7 @@
 | NFR-004 | 交換可能性 | `TrackingProvider`, 独立プロファイル、API契約 |
 | NFR-005 | プライバシー | 同定なし、既定で映像・特徴量を保存しない |
 | NFR-006 | 監査性 | 出自、品質指標、人工データシード、試験報告 |
+| NFR-007 | 入力交換可能性 | `FaceMeshFrameSource` により実カメラ・録画・IPCを同一のPnP/配信経路へ接続 |
 
 ## 3. ハードウェアプロファイル
 
@@ -84,7 +86,7 @@ rotation、8°以下の向き差、15 mm以下のRMSを満たさないファイ�
 {
   "sequence": 42,
   "timestamp_unix_s": 1786932091.7,
-  "source": "synthetic | facemesh",
+  "source": "synthetic | facemesh | replay",
   "confidence": 0.99,
   "cyclopean_eye_display_m": [0.02, 0.01, 0.67],
   "left_eye_display_m": [-0.012, 0.01, 0.67],
@@ -148,6 +150,8 @@ rotation、8°以下の向き差、15 mm以下のRMSを満たさないファイ�
 - 変換回転が直交でない: プロファイル拒否。
 - PCDがASCIIでない: 表示エラー。
 - FaceMesh未導入: 合成モードを案内する明示例外。
+- replay JSONが連番でない、ランドマークが不足・非有限、映像解像度/フレーム数が不一致:
+  起動前に拒否。`replay` CLIでは個人 `shape.pcd` とtagcal `K,D` の指定も必須。
 - カメラ未接続: ランタイム状態へエラーを出し、API自体は維持。
 - WebSocketクライアント遅延: 古いフレームを蓄積せず最新値へ追従。
 - WebGL2不可: Canvas2Dへ切替。

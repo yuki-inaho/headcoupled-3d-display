@@ -11,6 +11,9 @@
 flowchart LR
     CAM[USB Camera] --> FM[Face detector / FaceMesh 478]
     FM --> PNP[Metric head pose solvePnP]
+    REC[recording.avi] --> REPLAY[Saved landmarks.json replay]
+    JSON[FaceMesh --save-json] --> REPLAY
+    REPLAY --> PNP
     PNP --> EYE[Left / right eye centers]
     SYN[Synthetic provider] --> STATE[TrackingState]
     EYE --> TSC[T_display_camera]
@@ -115,6 +118,26 @@ BGR frame
 標準点は鼻・両眼角・口角・顎など表情で動きにくい12点です。個人 `shape.pcd` が指定されると、
 起動時にcanonical head frameとのKabsch照合を行い、PCDのOpenCV/mm座標を内部head frameへ
 正規化します。照合失敗（反射、軸違い、単位違い）はカメラ開始前に拒否します。
+
+### 5.1 録画再生経路
+
+`facemesh run --save-json` が保存する各フレームの `frame`, `faces[].score`,
+`faces[].landmarks` を、同じ録画映像と組にして読む `replay` providerがあります。再推論は
+行わず、保存済み478点へ上記と同じmetric PnPを適用します。起動時に次をすべて検査します。
+
+- JSONは空でない、ゼロ始まりの連続したフレーム列であること
+- 各顔は0〜1の信頼度と少なくとも468個の有限な画像座標を持つこと
+- 映像サイズがtagcal由来の `K,D` と一致すること
+- 実デコードした映像フレーム数とJSONレコード数が一致すること（コンテナのメタデータ値は信用しない）
+
+これはFaceMesh実行環境（Python 3.10/GPU）と表示環境（Python 3.13）を直接importで混在させず、
+実入力をブラウザーまでE2E検証するための境界です。
+
+実装上、PnP/WebSocket層は `FaceMeshFrameSource` という入力ポートだけを知ります。このポートの
+値は「BGRフレーム、FaceMesh観測列、入力フレーム番号」であり、`_LiveFaceMeshInput`（実カメラ）と
+`RecordedFaceMeshInput`（録画）が同じ契約を実装します。したがって録画は本番処理を迂回する偽の
+姿勢データではなく、カメラ/IPCの代わりに差し込める決定的な入力テストダブルです。将来のIPCは
+このポートを実装するだけで、metric PnP・個人メッシュ・WebSocket・ブラウザーを変更しません。
 
 ## 6. 非対称投影
 

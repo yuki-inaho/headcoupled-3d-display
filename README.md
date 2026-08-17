@@ -23,10 +23,13 @@
 ## 構成
 
 ```text
-camera / synthetic source
+camera / recorded FaceMesh source / synthetic source
         │
         ├── FaceMesh 478点（任意、添付コンポーネント）
         │       └── 12点 SQPNP → 虹彩中心 → 両眼中点
+        │
+        └── recording.avi + landmarks.json
+                └── 同じ12点SQPNP → 通常のWebSocket/ブラウザー経路
         │
         └── TrackingState（画面座標系）
                 ├── /ws/pose      JSON
@@ -154,12 +157,46 @@ PYTHONPATH=src .venv/bin/python -m headcoupled_display.cli import-tagcal \
 PYTHONPATH=src .venv/bin/python -m headcoupled_display.cli profile-summary config/hardware_profile.measured.json
 ```
 
-### 3. FaceMesh実入力
+### 3. FaceMesh実入力と録画再生
 
 添付FaceMeshはPython 3.10、ONNX Runtime GPU 1.18、CUDA 11.8/cuDNN 8系の独立環境です。
 実カメラのリアルタイム確認は、その環境の `just cam /dev/video0`（または本リポジトリから
-`just facemesh-live /dev/video0`）で行います。headcoupledのブラウザー表示は現在は合成追跡です。
-両環境間のIPCブリッジが未実装のため、`--source facemesh` を実機起動手順として案内しません。
+`just facemesh-live /dev/video0`）で行います。二つのPython環境間の**ライブ**IPCブリッジは未実装のため、
+`--source facemesh` を実機のブラウザー起動手順として案内しません。
+
+一方、**録画済みの実映像**は、FaceMeshの結果JSONと映像を同じフレーム番号で再生する
+`replay` sourceでブラウザーへ通せます。これは二つのPython環境を混ぜずに、実映像 →
+FaceMesh 478点 → 個人メッシュSQPNP → WebSocket → 3D表示を検証する経路です。
+
+まずFaceMesh環境で、映像から全フレームのJSONを作ります。
+
+```bash
+cd /home/inaho-omen/Project/facemesh_tracking
+uv run facemesh run \
+  --source /absolute/path/recording.avi \
+  --save-json /absolute/path/recording.landmarks.json
+```
+
+次に3D表示を起動します。4入力は必須で、映像とJSONは同じ録画、`shape.pcd` はその利用者、
+tagcalはその映像の解像度・フォーカスで取得した内部較正を指定します。
+
+```bash
+cd /home/inaho-omen/Project/headcoupled-3d-display
+just replay-recording \
+  /absolute/path/recording.landmarks.json \
+  /absolute/path/recording.avi \
+  /absolute/path/shape.pcd \
+  /absolute/path/calibration.json
+```
+
+`http://127.0.0.1:8000` の入力欄には元映像、3D表示には録画の両眼中点を出します。起動時に
+JSONの連番、478点、映像解像度、**実デコードした**映像とJSONのフレーム数を照合します。不一致は起動を拒否します。
+`--intrinsics` は実測 `K,D` をメモリ上でプロファイルへ反映しますが、カメラ・ディスプレイの
+外部姿勢は別問題です。demoプロファイルの外部姿勢を使う限り、UIはその旨を警告します。
+
+録画は姿勢を直接モックするのではなく、映像・FaceMesh観測・フレーム番号を組にする
+`FaceMeshFrameSource` の実装です。両眼位置計算、個人メッシュ、WebSocket、ブラウザー描画は
+ライブ入力と共通です。将来は同じ入力ポートのIPC実装を差し込めます。
 
 `facemesh_tracking reconstruct --pd <実測PD-mm>` が作る個人用 `shape.pcd`（478点）を使う場合は、
 利用者プロファイルにプロフィールファイルからの相対パスで指定します。PCDは個人の生体情報なので
