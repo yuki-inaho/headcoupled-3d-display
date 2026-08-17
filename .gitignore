@@ -1,5 +1,8 @@
-# Python environments and caches
+# Python environments and caches.
+# The glob matters: candidate-evaluation environments such as .venv-transport-bench are
+# hundreds of megabytes and must not be committable by accident.
 .venv/
+.venv-*/
 __pycache__/
 *.py[cod]
 *.egg-info/
