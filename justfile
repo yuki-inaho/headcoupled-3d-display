@@ -1,7 +1,14 @@
 set dotenv-load := true
 
 root := justfile_directory()
+# Synthetic demonstration geometry (20 cm / 10 deg). Used only by the synthetic demo
+# recipes below; real-input recipes must not use it.
 profile := root / "config/hardware_profile.demo.json"
+# The mount geometry confirmed on this machine (15 cm / 12 deg). Every recipe that
+# feeds *real* input -- recorded replay, live IPC -- uses this, because running real
+# faces through demonstration geometry produces a plausible-looking but wrong scene.
+local_profile := root / "config/hardware_profile.local.json"
+scene_profile := root / "config/scene_profile.default.json"
 python := root / ".venv/bin/python"
 facemesh_project := env_var_or_default("FACEMESH_TRACKING_PROJECT", root / "../facemesh_tracking")
 
@@ -27,12 +34,12 @@ facemesh-live device="/dev/video0":
 
 # Replay a recorded FaceMesh result in the browser dashboard. All four inputs must come
 # from the same camera session: the video, its saved landmarks, the personal shape, and K,D.
-replay-recording landmarks video face_model intrinsics host="127.0.0.1" port="8000":
-    PYTHONPATH={{root}}/src {{python}} -m headcoupled_display.cli serve --host {{host}} --port {{port}} --profile {{profile}} --source replay --replay-landmarks "{{landmarks}}" --replay-video "{{video}}" --face-model "{{face_model}}" --intrinsics "{{intrinsics}}"
+replay-recording landmarks video face_model intrinsics host="127.0.0.1" port="8000" profile_path=local_profile scene_path=scene_profile:
+    PYTHONPATH={{root}}/src {{python}} -m headcoupled_display.cli serve --host {{host}} --port {{port}} --profile {{profile_path}} --scene {{scene_path}} --source replay --replay-landmarks "{{landmarks}}" --replay-video "{{video}}" --face-model "{{face_model}}" --intrinsics "{{intrinsics}}"
 
 # Start the 3D dashboard ready for a separate Python-3.10 FaceMesh producer on localhost.
-serve-ipc face_model intrinsics host="127.0.0.1" port="8000":
-    PYTHONPATH={{root}}/src {{python}} -m headcoupled_display.cli serve --host {{host}} --port {{port}} --profile {{profile}} --source ipc --face-model "{{face_model}}" --intrinsics "{{intrinsics}}"
+serve-ipc face_model intrinsics host="127.0.0.1" port="8000" profile_path=local_profile scene_path=scene_profile:
+    PYTHONPATH={{root}}/src {{python}} -m headcoupled_display.cli serve --host {{host}} --port {{port}} --profile {{profile_path}} --scene {{scene_path}} --source ipc --face-model "{{face_model}}" --intrinsics "{{intrinsics}}"
 
 # Run this in the FaceMesh Python/CUDA environment after `serve-ipc` is ready.
 facemesh-ipc endpoint="http://127.0.0.1:8000/api/input/facemesh" device="/dev/video0":
@@ -50,9 +57,11 @@ synthetic-calibration output="artifacts/synthetic_calibration_result.json":
 bunny:
     {{python}} scripts/generate_bunny.py --output src/headcoupled_display/static/assets/bunny.pcd
 
-# Unit and API tests.
+# Unit and API tests. recorded_cuda is excluded as well as e2e: it needs a CUDA GPU,
+# the recording, the personal mesh and the tagcal intrinsics, so leaving it in would
+# make this recipe fail on any machine without that hardware.
 test:
-    PYTHONPATH={{root}}/src {{python}} -m pytest -m "not e2e"
+    PYTHONPATH={{root}}/src {{python}} -m pytest -m "not e2e and not recorded_cuda"
 
 # Browser end-to-end test using system Chromium.
 test-e2e:
@@ -75,11 +84,14 @@ complexity:
 benchmark-tracking iterations="5000":
     PYTHONPATH={{root}}/src {{python}} scripts/benchmark_tracking.py --iterations {{iterations}}
 
-# Full verification.
+# Full verification. Runs unit, API and browser E2E, but NOT recorded_cuda: that one
+# needs a CUDA GPU and the real recording, and is run explicitly with
+# `just test-e2e-recorded-cuda`.
 check:
     {{python}} -m ruff check src tests scripts
+    {{python}} -m ruff format --check src tests scripts
     {{python}} -m radon cc -s -n C src
-    PYTHONPATH={{root}}/src {{python}} -m pytest
+    PYTHONPATH={{root}}/src {{python}} -m pytest -m "not recorded_cuda"
 
 # Merge a tagcal calibration.json/YAML into the hardware profile.
 import-tagcal calibration output="config/hardware_profile.measured.json":
