@@ -12,6 +12,8 @@ functions, this file runs green under the product ``.venv`` with neither install
 
 from __future__ import annotations
 
+import argparse
+
 import pytest
 from pydantic import ValidationError
 
@@ -554,3 +556,90 @@ def test_encode_decode_control_json_round_trips_sequence_and_send_time() -> None
 def test_decode_control_returns_none_for_malformed_payload() -> None:
     assert bench._decode_control(b"not a valid packet", as_json=False) is None
     assert bench._decode_control(b"{not json", as_json=True) is None
+
+
+# --- measurement isolation (host-noise removal, never a threshold/scoring change) --
+#
+# These only exercise the pure argv/condition-building helpers behind --producer-cpus/
+# --consumer-cpus/--gc-disable/--warmup-messages -- never the live subprocess harness
+# (same constraint as the rest of this file; see module docstring).
+
+
+def test_no_isolation_default_adds_no_taskset_prefix_or_role_args() -> None:
+    isolation = bench._NO_ISOLATION
+    assert isolation.taskset_prefix(isolation.producer_cpus) == []
+    assert isolation.taskset_prefix(isolation.consumer_cpus) == []
+    assert isolation.role_args() == []
+
+
+def test_isolation_options_taskset_prefix_is_empty_when_cpus_not_given() -> None:
+    isolation = bench._IsolationOptions()
+    assert isolation.taskset_prefix(None) == []
+
+
+def test_isolation_options_taskset_prefix_wraps_cpu_list_with_taskset_dash_c() -> None:
+    isolation = bench._IsolationOptions(producer_cpus="1,2", consumer_cpus="4,5")
+    assert isolation.taskset_prefix(isolation.producer_cpus) == ["taskset", "-c", "1,2"]
+    assert isolation.taskset_prefix(isolation.consumer_cpus) == ["taskset", "-c", "4,5"]
+
+
+def test_isolation_options_role_args_passes_gc_disable_flag_through() -> None:
+    assert bench._IsolationOptions(gc_disable=False).role_args() == []
+    assert bench._IsolationOptions(gc_disable=True).role_args() == ["--gc-disable"]
+
+
+def test_isolate_measurement_process_disables_gc_only_when_requested(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(bench.gc, "disable", lambda: calls.append("disabled"))
+
+    bench._isolate_measurement_process(argparse.Namespace(gc_disable=False))
+    assert calls == []
+
+    bench._isolate_measurement_process(argparse.Namespace(gc_disable=True))
+    assert calls == ["disabled"]
+
+
+def test_resolve_condition_leaves_warmup_untouched_when_not_overridden() -> None:
+    args = argparse.Namespace(smoke=False, warmup_messages=None)
+    condition = bench._resolve_condition(args)
+    assert condition.warmup_messages == bench._DEFAULT_CONDITION.warmup_messages
+
+
+def test_resolve_condition_overrides_warmup_without_changing_other_fields() -> None:
+    args = argparse.Namespace(smoke=False, warmup_messages=90)
+    condition = bench._resolve_condition(args)
+    assert condition.warmup_messages == 90
+    assert condition.control_rate_hz == bench._DEFAULT_CONDITION.control_rate_hz
+    assert condition.control_message_count == bench._DEFAULT_CONDITION.control_message_count
+
+
+def test_resolve_condition_picks_smoke_condition_when_smoke_flag_set() -> None:
+    args = argparse.Namespace(smoke=True, warmup_messages=None)
+    condition = bench._resolve_condition(args)
+    assert condition == bench._SMOKE_CONDITION
+
+
+def test_cli_parser_defaults_leave_isolation_off() -> None:
+    args = bench._build_arg_parser().parse_args([])
+    assert args.producer_cpus is None
+    assert args.consumer_cpus is None
+    assert args.gc_disable is False
+    assert args.warmup_messages is None
+
+
+def test_cli_parser_accepts_isolation_flags() -> None:
+    args = bench._build_arg_parser().parse_args(
+        [
+            "--producer-cpus",
+            "1,2",
+            "--consumer-cpus",
+            "4,5",
+            "--gc-disable",
+            "--warmup-messages",
+            "90",
+        ]
+    )
+    assert args.producer_cpus == "1,2"
+    assert args.consumer_cpus == "4,5"
+    assert args.gc_disable is True
+    assert args.warmup_messages == 90

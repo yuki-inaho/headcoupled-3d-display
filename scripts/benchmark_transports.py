@@ -48,11 +48,27 @@ messages travel as the same raw bytes every other candidate uses -- no protobuf 
 Control and preview are two independent client-streaming RPCs multiplexed over one
 long-lived channel, per workdoc step 32/33's requirement to reuse the channel and to
 check whether HTTP/2 flow control lets stale frames accumulate.
+
+Measurement isolation: this dev host runs an unrelated desktop session (browser, window
+manager, other agent processes) that competes for the same CPUs, so an occasional
+control_latency_p95_ms outlier can come from host scheduling noise rather than the
+transport itself. ``--producer-cpus``/``--consumer-cpus`` (``taskset -c``) pin the two
+subprocesses to specific cores so they are not fighting each other -- or busy background
+processes -- for a core; ``--gc-disable`` turns off the cyclic GC inside each short-lived
+producer/consumer subprocess so a GC pause can never land between capturing a timestamp
+and using it; ``_http_producer``/``_grpc_producer`` eagerly establish their
+connection/channel before the timed loop starts rather than relying on
+``warmup_messages`` alone to absorb connection-setup cost; ``--warmup-messages`` lets that
+absorption window be widened further. None of this changes what is measured (the
+producer/consumer code paths and message content are identical) or how a run is judged
+(``CONTROL_P95_THRESHOLD_MS`` and the worst-run logic in ``_criterion_control_p95`` are
+untouched) -- it only removes noise sources that are not the transport under test.
 """
 
 from __future__ import annotations
 
 import argparse
+import gc
 import http.client
 import http.server
 import json
@@ -799,6 +815,12 @@ def _build_run_result(
 def _http_producer(run: _RunCondition, *, as_json: bool) -> dict[str, Any]:
     control_conn = http.client.HTTPConnection(run.host, run.control_port, timeout=5.0)
     preview_conn = http.client.HTTPConnection(run.host, run.preview_port, timeout=5.0)
+    # Establish both TCP connections before the timed inference loop starts (isolation
+    # measure: without this, http.client lazily connects on the first request(), so a
+    # connection-setup stall could otherwise land on an early *measured* message rather
+    # than being absorbed by warmup_messages alone).
+    control_conn.connect()
+    preview_conn.connect()
 
     def post(conn: http.client.HTTPConnection, path: str, body: bytes) -> None:
         conn.request("POST", path, body=body, headers={"Content-Length": str(len(body))})
@@ -1067,6 +1089,11 @@ def _grpc_producer(run: _RunCondition) -> dict[str, Any]:
     import grpc
 
     channel = grpc.insecure_channel(f"{run.host}:{run.control_port}")
+    # Block until the HTTP/2 connection is actually up (isolation measure, mirrors the
+    # explicit TCP connect() in _http_producer): without this, the handshake happens
+    # lazily on the first stream_unary call and could otherwise land on an early
+    # *measured* message rather than being absorbed by warmup_messages alone.
+    grpc.channel_ready_future(channel).result(timeout=10.0)
     control_mailbox = _LatestMailbox()
     preview_mailbox = _LatestMailbox()
     stop_event = threading.Event()
@@ -1207,7 +1234,18 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
+def _isolate_measurement_process(args: argparse.Namespace) -> None:
+    """Strip GC pauses from a producer/consumer subprocess's own timing (isolation
+    measure only -- never touches product code, see module docstring "Measurement
+    isolation" section). Each role process is short-lived and exits right after
+    writing its result file, so there is no long-run leak risk from disabling GC."""
+
+    if args.gc_disable:
+        gc.disable()
+
+
 def _run_role_consumer(args: argparse.Namespace) -> None:
+    _isolate_measurement_process(args)
     impl = _CANDIDATES[args.candidate]
     try:
         package_name, package_version = impl.dependency()
@@ -1244,6 +1282,7 @@ def _run_role_consumer(args: argparse.Namespace) -> None:
 
 
 def _run_role_producer(args: argparse.Namespace) -> None:
+    _isolate_measurement_process(args)
     impl = _CANDIDATES[args.candidate]
     condition = BenchmarkCondition.model_validate_json(Path(args.condition_file).read_text())
     run = _RunCondition(
@@ -1257,8 +1296,32 @@ def _run_role_producer(args: argparse.Namespace) -> None:
     Path(args.result_file).write_text(json.dumps(producer_result))
 
 
+@dataclass(frozen=True)
+class _IsolationOptions:
+    """Opt-in, benchmark-only noise-removal knobs (see module docstring "Measurement
+    isolation"). Every field defaults to "do nothing", so a bare CLI invocation (and
+    every existing recipe/test) behaves exactly as before this option was added."""
+
+    producer_cpus: str | None = None
+    consumer_cpus: str | None = None
+    gc_disable: bool = False
+
+    def taskset_prefix(self, cpus: str | None) -> list[str]:
+        return ["taskset", "-c", cpus] if cpus else []
+
+    def role_args(self) -> list[str]:
+        return ["--gc-disable"] if self.gc_disable else []
+
+
+_NO_ISOLATION = _IsolationOptions()
+
+
 def _run_one_candidate_run(
-    candidate: CandidateName, condition: BenchmarkCondition, run_index: int, host: str
+    candidate: CandidateName,
+    condition: BenchmarkCondition,
+    run_index: int,
+    host: str,
+    isolation: _IsolationOptions = _NO_ISOLATION,
 ) -> TransportRunResult | None:
     """Spawn isolated consumer+producer subprocesses for one run; None on missing dependency."""
 
@@ -1289,11 +1352,19 @@ def _run_one_candidate_run(
             str(run_index),
             "--condition-file",
             str(condition_file),
+            *isolation.role_args(),
         ]
         env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parent.parent / "src")}
 
         consumer_proc = subprocess.Popen(
-            [*base_args, "--role", "consumer", "--result-file", str(consumer_result_file)],
+            [
+                *isolation.taskset_prefix(isolation.consumer_cpus),
+                *base_args,
+                "--role",
+                "consumer",
+                "--result-file",
+                str(consumer_result_file),
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -1305,7 +1376,14 @@ def _run_one_candidate_run(
             return None
 
         producer_proc = subprocess.run(
-            [*base_args, "--role", "producer", "--result-file", str(producer_result_file)],
+            [
+                *isolation.taskset_prefix(isolation.producer_cpus),
+                *base_args,
+                "--role",
+                "producer",
+                "--result-file",
+                str(producer_result_file),
+            ],
             env=env,
             capture_output=True,
             text=True,
@@ -1344,9 +1422,13 @@ def _run_one_candidate_run(
 
 
 def run_candidate_benchmark(
-    candidate: CandidateName, condition: BenchmarkCondition, runs: int, host: str = "127.0.0.1"
+    candidate: CandidateName,
+    condition: BenchmarkCondition,
+    runs: int,
+    host: str = "127.0.0.1",
+    isolation: _IsolationOptions = _NO_ISOLATION,
 ) -> TransportCandidateReport:
-    first_run = _run_one_candidate_run(candidate, condition, 0, host)
+    first_run = _run_one_candidate_run(candidate, condition, 0, host, isolation)
     if first_run is None:
         impl = _CANDIDATES[candidate]
         try:
@@ -1360,7 +1442,7 @@ def run_candidate_benchmark(
 
     collected = [first_run]
     for run_index in range(1, runs):
-        collected.append(_run_one_candidate_run(candidate, condition, run_index, host))
+        collected.append(_run_one_candidate_run(candidate, condition, run_index, host, isolation))
     return TransportCandidateReport(
         candidate=candidate, dependency_available=True, runs=tuple(collected)
     )
@@ -1371,9 +1453,11 @@ def run_full_benchmark(
     runs: int,
     host: str = "127.0.0.1",
     candidates: Sequence[CandidateName] = REQUIRED_CANDIDATES,
+    isolation: _IsolationOptions = _NO_ISOLATION,
 ) -> TransportComparisonReport:
     reports = [
-        run_candidate_benchmark(candidate, condition, runs, host) for candidate in candidates
+        run_candidate_benchmark(candidate, condition, runs, host, isolation)
+        for candidate in candidates
     ]
     return TransportComparisonReport(condition=condition, candidates=tuple(reports))
 
@@ -1423,7 +1507,48 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--smoke", action="store_true", help="100-message schema-validation smoke run"
     )
     parser.add_argument("--output", default="artifacts/perf/transport_comparison.json")
+    # Measurement isolation (opt-in; see module docstring "Measurement isolation").
+    # None of these change producer/consumer behaviour or the pass/fail thresholds --
+    # they only remove host-scheduling/GC/connection-setup noise from what gets timed.
+    parser.add_argument(
+        "--producer-cpus",
+        default=None,
+        help="taskset -c CPU list to pin the producer subprocess to, e.g. '1,2'",
+    )
+    parser.add_argument(
+        "--consumer-cpus",
+        default=None,
+        help="taskset -c CPU list to pin the consumer subprocess to, e.g. '3,4'",
+    )
+    parser.add_argument(
+        "--gc-disable",
+        action="store_true",
+        help="disable the cyclic GC inside the producer/consumer subprocesses",
+    )
+    parser.add_argument(
+        "--warmup-messages",
+        type=int,
+        default=None,
+        help="override the condition's warmup_messages (percentile window is unaffected)",
+    )
     return parser
+
+
+def _resolve_condition(args: argparse.Namespace) -> BenchmarkCondition:
+    condition = _SMOKE_CONDITION if args.smoke else _DEFAULT_CONDITION
+    if args.warmup_messages is not None:
+        condition = condition.model_copy(update={"warmup_messages": args.warmup_messages})
+    return condition
+
+
+def _print_verdict(verdict: ComparisonVerdict) -> None:
+    for candidate_verdict in verdict.verdicts:
+        status = "PASS" if candidate_verdict.passed else "FAIL"
+        print(f"[{status}] {candidate_verdict.candidate}")
+        for criterion in candidate_verdict.criteria:
+            mark = "ok" if criterion.passed else "NG"
+            print(f"    ({mark}) {criterion.name}: {criterion.detail}")
+    print(verdict.summary)
 
 
 def main() -> None:
@@ -1435,23 +1560,21 @@ def main() -> None:
         _run_role_producer(args)
         return
 
-    condition = _SMOKE_CONDITION if args.smoke else _DEFAULT_CONDITION
+    condition = _resolve_condition(args)
     runs = 1 if args.smoke else args.runs
     candidates = tuple(name.strip() for name in args.candidates.split(","))  # type: ignore[assignment]
+    isolation = _IsolationOptions(
+        producer_cpus=args.producer_cpus,
+        consumer_cpus=args.consumer_cpus,
+        gc_disable=args.gc_disable,
+    )
 
-    report = run_full_benchmark(condition, runs, args.host, candidates)  # type: ignore[arg-type]
+    report = run_full_benchmark(condition, runs, args.host, candidates, isolation)  # type: ignore[arg-type]
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(report.model_dump_json(indent=2) + "\n")
 
-    verdict = evaluate_report(report)
-    for candidate_verdict in verdict.verdicts:
-        status = "PASS" if candidate_verdict.passed else "FAIL"
-        print(f"[{status}] {candidate_verdict.candidate}")
-        for criterion in candidate_verdict.criteria:
-            mark = "ok" if criterion.passed else "NG"
-            print(f"    ({mark}) {criterion.name}: {criterion.detail}")
-    print(verdict.summary)
+    _print_verdict(evaluate_report(report))
 
 
 if __name__ == "__main__":

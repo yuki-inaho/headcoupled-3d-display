@@ -175,6 +175,17 @@ benchmark-transports runs="5" output="artifacts/perf/transport_comparison.json":
 benchmark-transports-smoke:
     .venv-transport-bench/bin/python scripts/benchmark_transports.py --smoke --output artifacts/perf/transport_comparison_smoke.json
 
+# Step 33 (noise-isolated): same comparison as benchmark-transports, but pins the
+# producer/consumer subprocesses to disjoint CPUs (taskset -c, no root needed),
+# disables the cyclic GC inside them, and widens warmup_messages -- removing host-
+# scheduling/GC/connection-setup noise from the timed window without touching
+# CONTROL_P95_THRESHOLD_MS or the worst-run judgement in _criterion_control_p95. Pick
+# producer_cpus/consumer_cpus from `cat /proc/loadavg` + a fresh /proc/stat per-core
+# sample on this host, not blindly -- there is no cgroup/root isolation available, so
+# these are a best-effort pin, not an exclusive reservation.
+benchmark-transports-isolated runs="25" producer_cpus="1,2" consumer_cpus="4,5" warmup_messages="90" output="artifacts/perf/transport_comparison_isolated.json":
+    .venv-transport-bench/bin/python scripts/benchmark_transports.py --runs {{runs}} --producer-cpus {{producer_cpus}} --consumer-cpus {{consumer_cpus}} --gc-disable --warmup-messages {{warmup_messages}} --output {{output}}
+
 # Step 40: production-equivalent end-to-end run. Real recording -> real CUDA FaceMesh
 # inference in the Python 3.10 environment -> the adopted two-lane IPC -> metric PnP ->
 # /ws/pose -> the off-axis renderer. Exits non-zero when CUDA is unavailable or an input
