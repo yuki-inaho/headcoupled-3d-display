@@ -80,6 +80,45 @@ class FaceMeshInputFrame:
     faces: tuple[FaceMeshObservation, ...]
     label: str
     frame_index: int | None = None
+    #: A preview already compressed by the producer. When set, the server forwards these
+    #: bytes untouched: decoding a JPEG only to draw on it and re-encode it costs a
+    #: decode plus an encode per frame on the display machine and gains nothing the
+    #: producer could not have drawn itself. ``None`` keeps the local encode path, which
+    #: recorded replay and synthetic sources still use.
+    preview_jpeg: bytes | None = None
+
+
+#: JPEG start-of-frame markers. SOF4/SOF8/SOF12 are not frame headers despite being in
+#: the 0xC0-0xCF block, so they are excluded rather than mis-parsed.
+_JPEG_SOF_EXCLUDED = frozenset({0xC4, 0xC8, 0xCC})
+
+
+def jpeg_dimensions(data: bytes) -> tuple[int, int]:
+    """Read a JPEG's width and height from its SOF marker, without decoding it.
+
+    The server polices the preview resolution contract on every frame. Decoding the image
+    to read its shape would reintroduce exactly the per-frame decode this lane exists to
+    remove, so the header is parsed directly instead.
+    """
+
+    if data[:2] != b"\xff\xd8":
+        raise ValueError("preview payload is not a JPEG")
+    offset = 2
+    while offset + 4 <= len(data):
+        if data[offset] != 0xFF:
+            raise ValueError("malformed JPEG marker segment")
+        marker = data[offset + 1]
+        length = int.from_bytes(data[offset + 2 : offset + 4], "big")
+        if 0xC0 <= marker <= 0xCF and marker not in _JPEG_SOF_EXCLUDED:
+            if offset + 9 > len(data):
+                raise ValueError("truncated JPEG start-of-frame segment")
+            height = int.from_bytes(data[offset + 5 : offset + 7], "big")
+            width = int.from_bytes(data[offset + 7 : offset + 9], "big")
+            return width, height
+        if length < 2:
+            raise ValueError("malformed JPEG segment length")
+        offset += 2 + length
+    raise ValueError("JPEG has no start-of-frame marker")
 
 
 @runtime_checkable
@@ -432,6 +471,20 @@ class FaceMeshPoseProvider:
         self._last_timestamp = time.perf_counter()
         self._fps_ema = 0.0
         self._last_eye = np.array([0.0, 0.0, 0.65], dtype=np.float64)
+        # Counted so a test can assert the server re-encoded nothing, rather than
+        # inferring it from timings.
+        self._forwarded_previews = 0
+        self._encoded_previews = 0
+
+    @property
+    def preview_encode_count(self) -> int:
+        """How many previews this server encoded itself. Must stay 0 for IPC input."""
+
+        return self._encoded_previews
+
+    @property
+    def preview_forward_count(self) -> int:
+        return self._forwarded_previews
 
     def sample(self) -> tuple[TrackingState, bytes]:
         started = time.perf_counter()
@@ -447,6 +500,10 @@ class FaceMeshPoseProvider:
             None if input_frame.frame_index is None else {"input_frame": input_frame.frame_index}
         )
         state = self._build_state(measurement, started, diagnostics=diagnostics)
+        if input_frame.preview_jpeg is not None:
+            self._forwarded_previews += 1
+            return state, input_frame.preview_jpeg
+        self._encoded_previews += 1
         return state, self._encode_preview(input_frame.frame_bgr, measurement, input_frame.label)
 
     def close(self) -> None:

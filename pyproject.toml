@@ -52,6 +52,10 @@ addopts = "-q"
 testpaths = ["tests"]
 markers = [
   "e2e: browser end-to-end test",
+  # Deliberately a separate marker from `e2e`: this one needs a CUDA GPU, the recording,
+  # the personal mesh and the tagcal intrinsics. Mixing it into `e2e` would make an
+  # ordinary CI run either fail for want of hardware or skip silently and look green.
+  "recorded_cuda: end-to-end run of the recording through real CUDA FaceMesh inference",
 ]
 
 [tool.ruff]
