@@ -1,0 +1,19 @@
+# Dependencies for the transport-candidate benchmark harness ONLY (workdoc step 32).
+#
+# This file is deliberately separate from pyproject.toml / requirements.lock: pyzmq and
+# grpcio are candidates under evaluation, not adopted runtime dependencies. They must
+# never leak into the product's requirements.lock. Install into an isolated environment,
+# e.g.:
+#   uv venv --python 3.13 .venv-transport-bench
+#   uv pip sync --python .venv-transport-bench/bin/python requirements.transport-bench.lock
+#
+# numpy/pydantic/beartype are included so scripts/benchmark_transports.py can reuse
+# headcoupled_display.performance.compute_stage_percentiles and headcoupled_display's
+# StrictModel/pydantic conventions for its own report schema when run standalone in this
+# isolated environment (it is also imported, without these three exercised at runtime,
+# from the product .venv's test suite -- see scripts/benchmark_transports.py's docstring).
+pyzmq>=26,<27
+grpcio>=1.60,<2
+numpy>=1.26,<3
+pydantic>=2.9,<3
+beartype>=0.22,<1
