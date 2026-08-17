@@ -48,9 +48,19 @@ playwright-cli:
 lint:
     {{python}} -m ruff check src tests scripts
 
+# Report cyclomatic complexity (C or worse) and maintainability for the Python source.
+complexity:
+    {{python}} -m radon cc -s -n C src
+    {{python}} -m radon mi -s src
+
+# Measure only the cached PnP/coordinate-transform hot path; camera inference is excluded.
+benchmark-tracking iterations="5000":
+    PYTHONPATH={{root}}/src {{python}} scripts/benchmark_tracking.py --iterations {{iterations}}
+
 # Full verification.
 check:
     {{python}} -m ruff check src tests scripts
+    {{python}} -m radon cc -s -n C src
     PYTHONPATH={{root}}/src {{python}} -m pytest
 
 # Merge a tagcal calibration.json/YAML into the hardware profile.

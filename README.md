@@ -84,6 +84,8 @@ just synthetic-calibration
 just test
 just test-e2e
 just playwright-cli
+just complexity             # radon: C以上の複雑度と保守性指数
+just benchmark-tracking     # キャッシュ済みSQPNPのCPUマイクロベンチマーク
 just check
 ```
 
