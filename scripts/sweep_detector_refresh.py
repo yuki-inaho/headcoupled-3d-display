@@ -20,6 +20,7 @@ import argparse
 import json
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -60,8 +61,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _decode_all_frames(video_path: Path) -> list[np.ndarray]:
-    """Decode the whole recording once so every candidate sees identical input.
+def _iter_frames(video_path: Path) -> Iterator[np.ndarray]:
+    """Stream the recording, re-decoding it for each candidate.
+
+    Every candidate therefore sees byte-identical input without any of them holding the
+    whole recording in memory. Keeping all 294 frames of 1280x720 BGR resident is roughly
+    800 MB, and doing that while six candidates ran back to back in one process made the
+    measured p95 rise with *lower* detector load -- an allocator artefact, not latency.
 
     The AVI header is not consulted: this file reports 602 frames at 60 fps while only
     294 decode. ``read()`` returning False is the only end-of-file signal used.
@@ -70,18 +76,28 @@ def _decode_all_frames(video_path: Path) -> list[np.ndarray]:
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
         raise RuntimeError(f"cannot open {video_path}")
-    frames: list[np.ndarray] = []
     try:
         while True:
             ok, frame = capture.read()
             if not ok or frame is None:
-                break
-            frames.append(frame)
+                return
+            yield frame
     finally:
         capture.release()
-    if not frames:
-        raise RuntimeError(f"{video_path} decoded zero frames")
-    return frames
+
+
+def _probe_recording(video_path: Path) -> tuple[int, int, int]:
+    """Return ``(frame_count, width, height)`` from one full decode pass."""
+
+    count = 0
+    shape: tuple[int, int] | None = None
+    for frame in _iter_frames(video_path):
+        if shape is None:
+            shape = (frame.shape[1], frame.shape[0])
+        count += 1
+    if shape is None:
+        raise RuntimeError(f"{video_path} produced no decodable frame")
+    return count, shape[0], shape[1]
 
 
 def _build_pipeline(device_id: int) -> Any:
@@ -97,7 +113,7 @@ def _exported_points(face: Any) -> list[list[float]]:
 
 
 def run_candidate(
-    pipeline: Any, frames: list[np.ndarray], interval: int, warmup: int
+    pipeline: Any, video_path: Path, interval: int, warmup: int
 ) -> dict[str, Any]:
     runner = TemporalRoiRunner(pipeline, detector_refresh_interval=interval)
     durations_ms: list[float] = []
@@ -105,7 +121,7 @@ def run_candidate(
     scores: list[float] = []
     missing = 0
 
-    for index, frame in enumerate(frames):
+    for index, frame in enumerate(_iter_frames(video_path)):
         started = time.perf_counter_ns()
         result = runner.process(frame)
         elapsed_ms = (time.perf_counter_ns() - started) / 1e6
@@ -130,9 +146,9 @@ def run_candidate(
 
 
 def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
-    frames = _decode_all_frames(args.video)
-    if len(frames) <= args.warmup:
-        raise RuntimeError(f"decoded only {len(frames)} frames but --warmup={args.warmup}")
+    frame_count, width, height = _probe_recording(args.video)
+    if frame_count <= args.warmup:
+        raise RuntimeError(f"decoded only {frame_count} frames but --warmup={args.warmup}")
     pipeline = _build_pipeline(args.device_id)
     providers = {
         label: _actual_providers(component, label)
@@ -142,12 +158,11 @@ def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
         if not names or names[0] != "CUDAExecutionProvider":
             raise RuntimeError(f"{label} is not running on CUDA (actual={names!r})")
 
-    height, width = frames[0].shape[:2]
-    candidates = [run_candidate(pipeline, frames, interval, args.warmup) for interval in args.intervals]
+    candidates = [run_candidate(pipeline, args.video, interval, args.warmup) for interval in args.intervals]
     return {
         "schema_version": 1,
         "source": str(args.video.resolve()),
-        "frame_count": len(frames),
+        "frame_count": frame_count,
         "warmup": args.warmup,
         "resolution": {"width_px": width, "height_px": height},
         "provider": "CUDAExecutionProvider",
