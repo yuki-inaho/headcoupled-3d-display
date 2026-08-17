@@ -164,3 +164,85 @@ def decode_control_packet(data: bytes) -> ControlPacket:
         inference_monotonic_ns=inference_monotonic_ns,
         inference_unix_ns=inference_unix_ns,
     )
+
+
+#: Tag for a dense-mesh packet. Distinct from PROTOCOL_MAGIC so a mesh payload delivered
+#: to the control endpoint by mistake is rejected rather than half-parsed.
+MESH_MAGIC: bytes = b"HC3M"
+
+#: Wire-format version for the mesh lane, versioned independently of the control lane:
+#: the two carry different things and there is no reason to force them to move together.
+MESH_VERSION: int = 1
+
+#: MediaPipe ships a 468-point mesh and a 478-point one that appends 10 iris points. The
+#: first 468 indices mean the same thing in both, so both are accepted -- and nothing
+#: else is, because any other count means the producer is not running the mesh this
+#: display was calibrated against.
+MESH_POINT_COUNTS: frozenset[int] = frozenset({468, 478})
+
+#: magic 4s | version H | point_count H | sequence Q, then point_count * (x, y) float32.
+#: Variable length on purpose: the packet says how many points it carries and the length
+#: is checked against that, so a truncated payload cannot be read as a shorter mesh.
+MESH_HEADER_FORMAT: str = "!4sHHQ"
+MESH_HEADER_SIZE: int = struct.calcsize(MESH_HEADER_FORMAT)
+
+
+@dataclass(frozen=True, slots=True)
+class MeshPacket:
+    """One frame of dense face landmarks in source-image pixel coordinates.
+
+    These are the *image* coordinates the recogniser produced, at the recognition
+    resolution -- not the preview resolution and not display metres. A viewer scales them
+    into whatever box it draws in; nothing downstream may treat them as metric.
+    """
+
+    points_px: tuple[tuple[float, float], ...]
+    sequence: int
+
+    def __post_init__(self) -> None:
+        if len(self.points_px) not in MESH_POINT_COUNTS:
+            raise ProtocolError(
+                f"mesh must carry one of {sorted(MESH_POINT_COUNTS)} points, "
+                f"got {len(self.points_px)}"
+            )
+        for x, y in self.points_px:
+            if not (math.isfinite(x) and math.isfinite(y)):
+                raise ProtocolError("mesh coordinates must be finite (no NaN/Inf)")
+
+
+def encode_mesh_packet(packet: MeshPacket) -> bytes:
+    count = len(packet.points_px)
+    header = struct.pack(MESH_HEADER_FORMAT, MESH_MAGIC, MESH_VERSION, count, packet.sequence)
+    flat = [value for point in packet.points_px for value in point]
+    return header + struct.pack(f"!{2 * count}f", *flat)
+
+
+def decode_mesh_packet(data: bytes) -> MeshPacket:
+    """Deserialize and validate a mesh packet.
+
+    Rejects a bad magic, a version other than ``MESH_VERSION`` (future versions are not
+    treated as forward compatible), a point count outside ``MESH_POINT_COUNTS``, a length
+    that disagrees with the declared count, and any non-finite coordinate.
+    """
+
+    if len(data) < MESH_HEADER_SIZE:
+        raise ProtocolError(f"mesh packet is shorter than its {MESH_HEADER_SIZE}-byte header")
+    magic, version, count, sequence = struct.unpack(MESH_HEADER_FORMAT, data[:MESH_HEADER_SIZE])
+    if magic != MESH_MAGIC:
+        raise ProtocolError(f"bad mesh magic {magic!r}, expected {MESH_MAGIC!r}")
+    if version != MESH_VERSION:
+        raise ProtocolError(
+            f"unsupported mesh protocol version {version}; only {MESH_VERSION} is accepted"
+        )
+    if count not in MESH_POINT_COUNTS:
+        raise ProtocolError(
+            f"mesh declares {count} points; only {sorted(MESH_POINT_COUNTS)} are accepted"
+        )
+    expected = MESH_HEADER_SIZE + 8 * count
+    if len(data) != expected:
+        raise ProtocolError(
+            f"mesh declares {count} points ({expected} bytes) but the payload is {len(data)}"
+        )
+    values = struct.unpack(f"!{2 * count}f", data[MESH_HEADER_SIZE:])
+    points = tuple((values[i], values[i + 1]) for i in range(0, len(values), 2))
+    return MeshPacket(points_px=points, sequence=sequence)

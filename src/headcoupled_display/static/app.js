@@ -1,4 +1,5 @@
 import { PointCloudRenderer } from "./renderer.js";
+import { MeshView, connectMesh } from "./mesh_view.js";
 
 const byId = (id) => document.getElementById(id);
 const setText = (id, value) => { const element = byId(id); if (element) element.textContent = value; };
@@ -12,6 +13,7 @@ const PHYSICAL_ASPECT_RATIO = 0.596 / 0.335;
 const ASPECT_TOLERANCE = 0.02;
 
 let renderer = null;
+let meshView = null;
 let lastCameraUrl = null;
 let poseReconnectTimer = null;
 let cameraReconnectTimer = null;
@@ -199,8 +201,27 @@ function updateAspectState() {
     : "物理投影は未検証です。全画面表示にすると実ディスプレイとの一致を確認できます。";
 }
 
+/**
+ * Switch the input panel between the camera image and the recognised face mesh.
+ *
+ * Both streams stay connected either way: the point of this control is to choose what is
+ * shown, not to decide what the tracker is doing, and reconnecting on every toggle would
+ * make the mesh blank for a frame each time.
+ */
+function setInputView(view) {
+  byId("camera-frame-container").dataset.inputView = view;
+  const button = byId("input-view-toggle");
+  button.setAttribute("aria-pressed", String(view === "mesh"));
+  button.textContent = view === "mesh" ? "映像表示" : "顔メッシュ表示";
+  document.body.dataset.inputView = view;
+}
+
 function setupControls() {
   byId("calibrate-synthetic").addEventListener("click", runSyntheticCalibration);
+  byId("input-view-toggle").addEventListener("click", () => {
+    const current = byId("camera-frame-container").dataset.inputView;
+    setInputView(current === "mesh" ? "image" : "mesh");
+  });
   byId("fullscreen-button").addEventListener("click", async () => {
     if (!document.fullscreenElement) await document.documentElement.requestFullscreen();
     else await document.exitFullscreen();
@@ -224,6 +245,9 @@ async function main() {
     await loadProfile();
     connectPose();
     connectCamera();
+    meshView = new MeshView(byId("mesh-canvas"));
+    connectMesh(meshView);
+    setInputView("image");
     updateAspectState();
     document.body.dataset.ready = "true";
   } catch (error) {

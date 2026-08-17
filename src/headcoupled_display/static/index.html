@@ -40,10 +40,16 @@
           <span class="eyebrow">INPUT STREAM</span>
           <h2 id="camera-heading">カメラ／合成入力</h2>
         </div>
-        <button id="camera-toggle" class="text-button" type="button">映像を隠す</button>
+        <div class="panel-actions">
+          <button id="input-view-toggle" class="text-button" type="button"
+                  aria-pressed="false">顔メッシュ表示</button>
+          <button id="camera-toggle" class="text-button" type="button">映像を隠す</button>
+        </div>
       </div>
-      <div class="camera-frame">
+      <div id="camera-frame-container" class="camera-frame" data-input-view="image">
         <img id="camera-preview" alt="追跡入力のプレビュー">
+        <canvas id="mesh-canvas" width="640" height="360"
+                aria-label="認識した顔メッシュ"></canvas>
         <div class="camera-reticle" aria-hidden="true"></div>
       </div>
       <div class="compact-grid">
@@ -132,7 +138,7 @@
   <footer class="bottom-strip">
     <span id="renderer-status">WebGL2を初期化中</span>
     <span>座標系: 画面中央原点 / +X右 / +Y上 / +Z観察者側</span>
-    <span>表示対象: original synthetic bunny.pcd</span>
+    <span>表示対象: Stanford Bunny (bun_zipper)</span>
   </footer>
   <script type="module" src="/static/app.js"></script>
 </body>

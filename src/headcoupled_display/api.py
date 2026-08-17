@@ -328,12 +328,14 @@ def _register_http_routes(application: FastAPI, context: _ApplicationContext) ->
 
 
 def _register_ipc_input_routes(application: FastAPI, ipc_input: IpcFaceMeshInput | None) -> None:
-    """Register the two independent IPC lanes (workdoc steps 36-38): control (a fixed-
-    size binary pose packet, ``application/octet-stream``, see ``protocol.py``) and
-    preview (an already-compressed JPEG, ``image/jpeg``). These are deliberately
-    separate endpoints and payload formats rather than one JSON envelope, so a broken
-    or throttled preview can never block or delay a control update -- see
-    ``IpcFaceMeshInput``'s own docstring.
+    """Register the independent IPC lanes: control, preview and dense mesh.
+
+    Control is a fixed-size binary pose packet (``application/octet-stream``, see
+    ``protocol.py``); preview is an already-compressed JPEG (``image/jpeg``); mesh is the
+    recogniser's dense landmarks (``application/octet-stream``), which the dashboard can
+    draw instead of the camera image. These are deliberately separate endpoints and
+    payload formats rather than one JSON envelope, so a broken or throttled preview --
+    or a viewer that only wants the mesh -- can never block or delay a control update.
     """
 
     def _require_ipc_source() -> IpcFaceMeshInput:
@@ -364,6 +366,45 @@ def _register_ipc_input_routes(application: FastAPI, ipc_input: IpcFaceMeshInput
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return Response(status_code=204)
+
+    @application.post("/api/input/facemesh/mesh")
+    async def publish_facemesh_mesh(request: Request) -> dict[str, int]:
+        """Accept one dense-mesh packet; forwarded to viewers exactly as received."""
+
+        port = _require_ipc_source()
+        body = await request.body()
+        try:
+            sequence = port.publish_mesh(body)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"accepted_sequence": sequence}
+
+
+def _register_mesh_websocket(application: FastAPI, ipc_input: IpcFaceMeshInput | None) -> None:
+    @application.websocket("/ws/mesh")
+    async def mesh_websocket(websocket: WebSocket) -> None:
+        """Stream the dense mesh as raw bytes, latest-value.
+
+        Closed immediately when the server is not running an IPC source: there is no
+        mesh to send, and leaving the socket open would look like "connected, no face".
+        """
+
+        await websocket.accept()
+        if ipc_input is None:
+            await websocket.close(code=1011, reason="server was not started with --source ipc")
+            return
+        version = 0
+        try:
+            while True:
+                try:
+                    version, packet = await asyncio.to_thread(
+                        ipc_input.wait_for_mesh, version, timeout_s=3.0
+                    )
+                except TimeoutError:
+                    continue
+                await websocket.send_bytes(packet)
+        except (WebSocketDisconnect, RuntimeError):
+            return
 
 
 def _register_clock_route(application: FastAPI) -> None:
@@ -458,6 +499,7 @@ def create_app(
     application.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
     _register_http_routes(application, context)
     _register_ipc_input_routes(application, context.ipc_input)
+    _register_mesh_websocket(application, context.ipc_input)
     _register_clock_route(application)
     _register_websocket_routes(application, context.runtime)
 
