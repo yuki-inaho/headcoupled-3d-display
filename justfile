@@ -104,3 +104,24 @@ facemesh-doctor:
 # Fallback task runner when the `just` binary is unavailable.
 task name *args:
     PYTHONPATH={{root}}/src {{python}} scripts/tasks.py {{name}} {{args}}
+
+# Absolute path to the recorded test video and the default location for its raw
+# (pre-validation) per-stage latency samples, shared by benchmark-recorded and
+# summarize-performance below (workdoc Aug17-2026 Step 7).
+test10_video := facemesh_project / "recordings/test10.avi"
+baseline_recorded_raw := root / "artifacts/perf/baseline_recorded_raw.json"
+
+# Step 7: record per-stage latency samples against a recorded video. Must run inside
+# facemesh_tracking's own Python 3.10 / CUDA environment (this recipe cd's into it and
+# uses `uv run`, not {{python}}) because pydantic/beartype are not installed there.
+# Writes raw, not-yet-schema-validated JSON; follow with `just summarize-performance`.
+benchmark-recorded video=test10_video output=baseline_recorded_raw *extra:
+    cd {{facemesh_project}} && PYTHONPATH={{root}} uv run python {{root}}/scripts/benchmark_recorded.py --video {{video}} --output {{output}} {{extra}}
+
+# Step 7: validate benchmark-recorded's raw JSON against headcoupled_display.performance's
+# strict schema, write artifacts/perf/baseline_recorded.json, and append a tracked summary
+# to docs/performance_results.md. --command (required) records the exact benchmark-recorded
+# invocation for traceability, e.g.:
+#   just summarize-performance extra='--command "just benchmark-recorded"'
+summarize-performance raw=baseline_recorded_raw *extra:
+    PYTHONPATH={{root}}/src {{python}} scripts/summarize_performance.py --raw {{raw}} {{extra}}
