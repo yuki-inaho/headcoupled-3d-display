@@ -175,6 +175,50 @@ def frustum_extents(
     return float(left), float(right), float(bottom), float(top)
 
 
+def view_matrix(eye_display_m: FloatArray) -> FloatArray:
+    """World-to-eye transform for a head-coupled window.
+
+    The observer's orientation never rotates the frustum: the window is fixed to the
+    physical screen and only the eye position moves, so the view transform is a pure
+    translation. Head rotation is deliberately ignored here; it changes what the observer
+    looks at, not where the window is.
+    """
+
+    eye = np.asarray(eye_display_m, dtype=np.float64)
+    if eye.shape != (3,):
+        raise ValueError("eye_display_m must be a 3-vector")
+    matrix = np.eye(4, dtype=np.float64)
+    matrix[:3, 3] = -eye
+    return matrix
+
+
+def project_display_point(
+    display: DisplaySpec,
+    eye_display_m: FloatArray,
+    point_display_m: FloatArray,
+    *,
+    near_m: float = 0.05,
+    far_m: float = 10.0,
+) -> FloatArray:
+    """Project a display-frame point to normalized device coordinates.
+
+    This is the Python counterpart of what the WebGL renderer computes, so geometry can
+    be asserted numerically instead of by comparing screenshots.
+    """
+
+    point = np.asarray(point_display_m, dtype=np.float64)
+    if point.shape != (3,):
+        raise ValueError("point_display_m must be a 3-vector")
+    projection = asymmetric_projection_matrix(
+        display, eye_display_m, near_m=near_m, far_m=far_m
+    )
+    view = view_matrix(eye_display_m)
+    clip = projection @ view @ np.array([*point, 1.0], dtype=np.float64)
+    if clip[3] <= 1e-12:
+        raise ValueError("point is at or behind the observer and cannot be projected")
+    return cast(FloatArray, clip[:3] / clip[3])
+
+
 def asymmetric_projection_matrix(
     display: DisplaySpec,
     eye_display_m: FloatArray,
