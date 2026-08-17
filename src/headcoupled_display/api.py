@@ -14,8 +14,9 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .calibration import fit_display_transform
+from .face_model import load_personal_face_model
 from .models import CalibrationDataset, HardwareProfile, UserProfile
-from .profiles import profile_with_resolved_matrix, summarize_profile
+from .profiles import load_user_profile, profile_with_resolved_matrix, summarize_profile
 from .runtime import RuntimeCoordinator
 from .synthetic import SyntheticTrackingProvider, run_synthetic_calibration
 from .tracking import FaceMeshTrackingProvider, TrackingProvider
@@ -87,7 +88,11 @@ def create_app(
     hardware = profile_with_resolved_matrix(
         HardwareProfile.load(profile_path or default_hardware_profile_path())
     )
-    user = UserProfile.load(user_profile_path or default_user_profile_path())
+    user = load_user_profile(user_profile_path or default_user_profile_path())
+    # Validate a configured mesh even in synthetic mode, so a bad profile is caught
+    # before a real camera is attached.
+    if user.face_model_path is not None:
+        load_personal_face_model(Path(user.face_model_path))
     selected_source: Literal["synthetic", "facemesh"] = source or os.getenv(
         "HEADCOUPLED_SOURCE", "synthetic"
     )  # type: ignore[assignment]

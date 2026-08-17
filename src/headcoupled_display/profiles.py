@@ -16,7 +16,7 @@ from .geometry import (
     mount_summary_from_camera_to_display,
     tuple_to_matrix,
 )
-from .models import CameraIntrinsics, HardwareProfile, MountSummary
+from .models import CameraIntrinsics, HardwareProfile, MountSummary, UserProfile
 
 
 def resolved_camera_to_display(profile: HardwareProfile) -> np.ndarray:
@@ -31,6 +31,18 @@ def profile_with_resolved_matrix(profile: HardwareProfile) -> HardwareProfile:
     return profile.model_copy(
         update={"camera_to_display_matrix": matrix_to_tuple(resolved_camera_to_display(profile))}
     )
+
+
+def load_user_profile(path: Path) -> UserProfile:
+    """Load a user profile and make its optional personal-mesh path absolute."""
+
+    profile = UserProfile.load(path)
+    if profile.face_model_path is None:
+        return profile
+    face_model_path = Path(profile.face_model_path).expanduser()
+    if not face_model_path.is_absolute():
+        face_model_path = path.parent / face_model_path
+    return profile.model_copy(update={"face_model_path": str(face_model_path.resolve())})
 
 
 def summarize_profile(profile: HardwareProfile) -> MountSummary:

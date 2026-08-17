@@ -11,6 +11,7 @@ from typing import Protocol, runtime_checkable
 import cv2
 import numpy as np
 
+from .face_model import HEAD_TO_OPENCV, FaceModel, canonical_face_model, load_personal_face_model
 from .geometry import normalize, transform_direction, transform_point
 from .models import HardwareProfile, TrackingState, UserProfile
 from .profiles import resolved_camera_to_display
@@ -28,23 +29,14 @@ class FaceMeshUnavailableError(RuntimeError):
 
 
 class HeadPoseEstimator:
-    """Solve a metric six-point head pose and derive left/right eye centers.
+    """Solve a metric dense-landmark PnP pose and derive pupil positions.
 
-    The canonical face is intentionally isolated here. A production deployment should
-    replace these generic dimensions with a user-calibrated metric face model.
+    ``SOLVEPNP_SQPNP`` has no fragile initial estimate; cheirality is then enforced so a
+    numerically successful mirrored solution cannot put the face behind the camera.
     """
 
-    LANDMARK_INDICES = np.array([1, 152, 33, 263, 61, 291], dtype=np.int32)
-    CANONICAL_POINTS_HEAD_M = np.array(
-        [
-            [0.000, 0.000, 0.000],   # nose tip
-            [0.000, -0.063, -0.012], # chin
-            [-0.035, 0.030, -0.025], # left outer eye
-            [0.035, 0.030, -0.025],  # right outer eye
-            [-0.028, -0.028, -0.020],# left mouth corner
-            [0.028, -0.028, -0.020], # right mouth corner
-        ],
-        dtype=np.float64,
+    LANDMARK_INDICES = np.array(
+        [1, 6, 33, 133, 362, 263, 61, 291, 199, 168, 94, 4], dtype=np.int32
     )
 
     def __init__(self, hardware: HardwareProfile, user: UserProfile) -> None:
@@ -55,44 +47,53 @@ class HeadPoseEstimator:
             hardware.camera.distortion_coefficients, dtype=np.float64
         ).reshape(-1, 1)
         self.camera_to_display = resolved_camera_to_display(hardware)
+        self.face_model: FaceModel = (
+            load_personal_face_model(Path(user.face_model_path))
+            if user.face_model_path is not None
+            else canonical_face_model()
+        )
+        if self.face_model.is_personal:
+            self.left_eye_head_m = self.face_model.left_iris_head_m
+            self.right_eye_head_m = self.face_model.right_iris_head_m
+        else:
+            self.left_eye_head_m = np.asarray(user.left_eye_center_head_m, dtype=np.float64)
+            self.right_eye_head_m = np.asarray(user.right_eye_center_head_m, dtype=np.float64)
+        self.cyclopean_eye_head_m = 0.5 * (self.left_eye_head_m + self.right_eye_head_m)
 
     def estimate(
         self,
         landmarks_xy: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        image_points = np.asarray(landmarks_xy, dtype=np.float64)[self.LANDMARK_INDICES]
-        success, rotation_vector, translation_vector, _ = cv2.solvePnPRansac(
-            self.CANONICAL_POINTS_HEAD_M,
+        landmarks = np.asarray(landmarks_xy, dtype=np.float64)
+        if landmarks.ndim != 2 or landmarks.shape[1] < 2 or len(landmarks) <= int(self.LANDMARK_INDICES.max()):
+            raise ValueError("FaceMesh landmarks must contain the 468 base landmarks")
+        image_points = np.ascontiguousarray(landmarks[self.LANDMARK_INDICES, :2])
+        if not np.isfinite(image_points).all():
+            raise ValueError("FaceMesh landmarks contain non-finite image coordinates")
+        success, rotation_vector, translation_vector = cv2.solvePnP(
+            self.face_model.pnp_points_opencv_m[self.LANDMARK_INDICES],
             image_points,
             self.camera_matrix,
             self.distortion,
-            flags=cv2.SOLVEPNP_ITERATIVE,
-            reprojectionError=5.0,
-            confidence=0.995,
-            iterationsCount=100,
+            flags=cv2.SOLVEPNP_SQPNP,
         )
-        if not success:
+        if not success or translation_vector.reshape(3)[2] <= 0.0:
             raise RuntimeError("head pose PnP did not converge")
-        if hasattr(cv2, "solvePnPRefineLM"):
-            rotation_vector, translation_vector = cv2.solvePnPRefineLM(
-                self.CANONICAL_POINTS_HEAD_M,
-                image_points,
-                self.camera_matrix,
-                self.distortion,
-                rotation_vector,
-                translation_vector,
-            )
         rotation_camera_head, _ = cv2.Rodrigues(rotation_vector)
         translation_camera_head = translation_vector.reshape(3)
 
-        def head_to_camera(point_head: tuple[float, float, float]) -> np.ndarray:
-            return rotation_camera_head @ np.asarray(point_head) + translation_camera_head
+        def head_to_camera(point_head: np.ndarray) -> np.ndarray:
+            return (
+                rotation_camera_head @ (np.asarray(point_head) * HEAD_TO_OPENCV)
+                + translation_camera_head
+            )
 
-        left_camera = head_to_camera(self.user.left_eye_center_head_m)
-        right_camera = head_to_camera(self.user.right_eye_center_head_m)
-        cyclopean_camera = head_to_camera(self.user.cyclopean_eye_head_m)
+        left_camera = head_to_camera(self.left_eye_head_m)
+        right_camera = head_to_camera(self.right_eye_head_m)
+        cyclopean_camera = head_to_camera(self.cyclopean_eye_head_m)
         forward_camera = normalize(
-            rotation_camera_head @ np.asarray(self.user.neutral_forward_axis_head)
+            rotation_camera_head
+            @ (np.asarray(self.user.neutral_forward_axis_head) * HEAD_TO_OPENCV)
         )
 
         left_display = transform_point(self.camera_to_display, left_camera)
