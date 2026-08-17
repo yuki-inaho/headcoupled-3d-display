@@ -162,3 +162,11 @@ benchmark-transports runs="5" output="artifacts/perf/transport_comparison.json":
 # Step 32: 100-message schema-validation smoke run (all four candidates).
 benchmark-transports-smoke:
     .venv-transport-bench/bin/python scripts/benchmark_transports.py --smoke --output artifacts/perf/transport_comparison_smoke.json
+
+# Step 40: production-equivalent end-to-end run. Real recording -> real CUDA FaceMesh
+# inference in the Python 3.10 environment -> the adopted two-lane IPC -> metric PnP ->
+# /ws/pose -> the off-axis renderer. Exits non-zero when CUDA is unavailable or an input
+# artifact is missing; it never skips. Marked recorded_cuda, not e2e, so an ordinary CI
+# run neither fails for want of a GPU nor passes by skipping.
+test-e2e-recorded-cuda *extra:
+    PYTHONPATH={{root}}/src {{python}} -m pytest -m recorded_cuda tests/e2e -q {{extra}}
