@@ -1,0 +1,27 @@
+set dotenv-load := true
+
+default:
+    @just --list
+
+# Sync the environment, GUI and dev tools included.
+setup:
+    uv sync --all-extras
+
+# Open the operating panel.
+panel:
+    uv run --extra gui tagcal panel
+
+test:
+    uv run --extra dev pytest
+
+lint:
+    uv run --extra dev ruff check .
+
+format:
+    uv run --extra dev ruff format .
+    uv run --extra dev ruff check --fix .
+
+typecheck:
+    uv run --extra dev ty check
+
+check: lint typecheck test

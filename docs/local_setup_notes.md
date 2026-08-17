@@ -1,0 +1,143 @@
+# ローカル環境での受け入れ結果と修正記録
+
+配布ZIP `headcoupled-3d-display.zip`
+(SHA-256 `564398e7ea117e669bfcefd306f883368fa31feb76efcaddbcf473ab4cc85ef2`)
+を展開し、この機体で実行できる状態にするまでに行った修正の記録です。
+
+実行環境: Linux x86_64 / Python 3.13 (uv venv) / GTX 1070 / Chromium 143 (Playwright 管理)
+
+---
+
+## 1. 配布物の主張と実際の差分
+
+| 配布物の主張 | 実際 | 対応 |
+| :--- | :--- | :--- |
+| `artifacts/ruff-report.txt`: "All checks passed!" | ruff 0.15.4 (同一版) で 8 件の指摘 | 全件修正し、レポートを本環境で再生成 |
+| `docs/test_report.md`: WebSocket 姿勢配信 成功 | `requirements.lock` に WebSocket 実装が無く、uvicorn では `/ws/pose` `/ws/camera` が接続不能 | `websockets` を依存とlockへ追加 |
+| Playwright CLI 試験 成功 | `just playwright-cli` が CLI を発見できず即時失敗 | venv 内 entry point の解決方法を修正 |
+| ブラウザE2E 成功（Canvas2D経路） | `/usr/bin/chromium` 決め打ちで、本機には存在せず起動不能 | Playwright 同梱 Chromium を既定に変更 |
+
+いずれも「配布元サンドボックスでは通っていたが、この環境では通らない」ではなく、
+**配布された `requirements.lock` の構成では原理的に通らない**ものが含まれます。
+
+---
+
+## 2. 修正内容
+
+### 2.1 WebSocket 実装の欠落（機能上もっとも重大）
+
+uvicorn は WebSocket プロトコル実装を同梱しません。`websockets` も `wsproto` も
+入っていない環境では `/ws/pose` `/ws/camera` が確立できず、ブラウザ側は
+「再接続中」のまま姿勢が一切更新されません。
+
+`tests/api/test_api.py` が通っていたのは Starlette `TestClient` が
+ASGI を直接叩き uvicorn のプロトコル層を経由しないためで、実サーバでの
+配信は検証できていませんでした。
+
+- `pyproject.toml` に `websockets>=13,<18` を追加
+- `requirements.lock` に `websockets==17.0.1` を追加
+
+### 2.2 Playwright CLI の発見失敗
+
+`scripts/playwright_cli_smoke.py`
+
+```python
+local_cli = Path(sys.executable).resolve().parent / "playwright"
+```
+
+uv が作る venv では `sys.executable` が共有インタプリタへのシンボリックリンクのため、
+`resolve()` すると venv の外（entry point が存在しない場所）を指します。
+`resolve()` を外しました。
+
+### 2.3 Chromium 実行ファイルの決め打ち
+
+`tests/e2e/test_browser.py` が `executable_path="/usr/bin/chromium"` 固定でした。
+Playwright 管理の Chromium を既定とし、環境変数 `HEADCOUPLED_CHROMIUM` で上書き可能に
+しました。取得用に `just setup-browsers` を追加しています。
+
+### 2.4 Chromium ポリシー書き換えシムの既定無効化
+
+`scripts/playwright_cli_smoke.py` の `provision_system_chromium_for_cli()` は、
+system chromium を `~/.cache/ms-playwright/` 配下へシンボリックリンクします。
+共有キャッシュを汚すため、`HEADCOUPLED_SYSTEM_CHROMIUM_SHIM=1` のときだけ動作するよう
+変更しました。
+
+なお `allow_localhost_for_managed_chromium()` は `/etc/chromium/policies/managed` が
+存在するときのみ動作し、本機には存在しないため無効です。
+
+### 2.5 lint 8 件
+
+- `UP035` × 2: `typing.Iterator` → `collections.abc.Iterator`
+- `UP017`: `datetime.now(timezone.utc)` → `datetime.now(UTC)`
+- `F401`: 未使用 import
+- `SIM105`: `contextlib.suppress` 化
+- `B008` × 3: typer の引数既定値での関数呼び出しを、既定 `None` + 関数内解決へ変更
+  （`default_hardware_profile_path()` は環境変数と cwd を参照するため、
+  モジュール定数化ではなく遅延評価を維持した）
+
+`UP017` の修正で `datetime.UTC` (3.11+) を使うため、`requires-python` を
+`>=3.10` から `>=3.11` へ修正しました。ruff の `target-version` が元から `py311`
+であり、宣言と実装が食い違っていたものを実装側に合わせています。
+
+---
+
+## 3. 本環境での検証結果
+
+```text
+just check          ruff All checks passed! / pytest 11 passed
+just test-e2e       1 passed
+just playwright-cli 成功（スクリーンショット生成）
+```
+
+### 3.1 合成較正（配布物の数値を再現）
+
+```text
+translation_error_mm  0.4641824454417735
+height_error_mm       0.08574027645394389
+rotation_error_deg    0.5609786045164163
+pitch_error_deg       0.19253936527826632
+```
+
+`docs/test_report.md` 記載値と一致します。乱数シード `20260817` に対する決定的な結果です。
+
+### 3.2 WebGL2 経路（配布元では未実行）
+
+配布元サンドボックスの Chromium は WebGL が無効で Canvas2D 代替経路しか実行できて
+いませんでしたが、本環境では **WebGL2 経路で 13,810 点の描画を確認**しました
+（`artifacts/playwright-cli-dashboard.png` のフッタ表示が `WebGL2 / 13,810 points`）。
+
+---
+
+## 4. 未検証のまま残る項目
+
+配布物の `docs/test_report.md` 8章の記載どおり、以下は実機接続が必要です。
+
+- 実カメラ入力と FaceMesh 推論（`components/facemesh_tracking/`）
+- 実機 tagcal 内部較正
+- 実ディスプレイ上の 5点／9点 外部較正
+- 実利用者の眼球中心・IPD 較正
+- エンドツーエンド遅延・ジッタ
+
+## 5. 同梱コンポーネントについての注意
+
+`components/facemesh_tracking/` は `facemesh_tracking_reconstruction` の
+**3次元復元機能を追加する前のスナップショット**です。以下を含みません。
+
+```text
+head_pose.py     canonical face + solvePnP 頭部姿勢
+calibration.py   外部キャリブレーション読み込み
+capture.py       v4l2 固定設定つき録画
+capture_gui.py   キーフレーム撮影GUI
+reconstruct.py   GTSAM バンドル調整・左右対称化・PD実寸化
+```
+
+このため `src/headcoupled_display/tracking.py` の `HeadPoseEstimator` は、
+一般顔6点モデルを内部に持つ**独自実装**になっています。既知の相違点は次のとおりです。
+
+- `cv2.SOLVEPNP_ITERATIVE` を使用。本家 `facemesh_tracking/head_pose.py` では
+  鏡像解（`tvec.z < 0`、face が camera の背後）へ収束する不具合が実測で確認され、
+  `SOLVEPNP_SQPNP` + cheirality 判定へ変更済み。ここには反映されていない。
+- 顔モデルが一般値のハードコードであり、`reconstruct.py` が出力する
+  個人固有の実寸メッシュ（`shape.pcd` / `shape.ply`）を利用していない。
+
+実機接続時は、この2点が精度の主要因になります。

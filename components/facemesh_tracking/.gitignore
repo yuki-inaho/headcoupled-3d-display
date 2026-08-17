@@ -1,0 +1,30 @@
+# ONNX weights are fetched automatically on first run (UniFace cache)
+models/
+
+# Rendered results
+outputs/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# TensorRT engine cache
+*.engine
+trt_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Scratch
+temp/

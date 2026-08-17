@@ -1,0 +1,60 @@
+[project]
+name = "headcoupled-3d-display"
+version = "0.1.0"
+description = "Calibrated head-coupled 3D point-cloud display with synthetic and FaceMesh tracking backends"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = { text = "MIT" }
+authors = [{ name = "Head-Coupled Display contributors" }]
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.32,<1",
+  # uvicorn ships no WebSocket implementation of its own; /ws/pose and /ws/camera
+  # are silently unavailable without it.
+  "websockets>=13,<18",
+  "numpy>=1.26,<3",
+  "scipy>=1.11,<2",
+  "opencv-python>=4.9,<5",
+  "pydantic>=2.9,<3",
+  "PyYAML>=6,<7",
+  "typer>=0.15,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx==0.28.1",
+  "pytest==9.0.2",
+  "playwright==1.57.0",
+  "ruff==0.15.4",
+]
+
+[project.scripts]
+headcoupled = "headcoupled_display.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/headcoupled_display"]
+
+[tool.hatch.build]
+include = [
+  "src/headcoupled_display/static/**/*",
+  "src/headcoupled_display/resources/**/*",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+markers = [
+  "e2e: browser end-to-end test",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]

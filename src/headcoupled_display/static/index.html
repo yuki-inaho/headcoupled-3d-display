@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 64 64%27%3E%3Crect width=%2764%27 height=%2764%27 rx=%2716%27 fill=%27%2357d6b5%27/%3E%3Ctext x=%2712%27 y=%2742%27 font-size=%2730%27 font-family=%27sans-serif%27 font-weight=%27900%27 fill=%27%2307101c%27%3EHC%3C/text%3E%3C/svg%3E">
+  <title>Head-Coupled 3D Display</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <canvas id="gl-canvas" aria-label="bunny.pcd head-coupled 3D view"></canvas>
+  <div class="screen-frame" aria-hidden="true"></div>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">HC</span>
+      <div>
+        <h1>Head-Coupled 3D Display</h1>
+        <p>bunny.pcd / asymmetric projection</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <span id="tracking-status" class="status-chip" data-kind="pending">初期化中</span>
+      <button id="fullscreen-button" class="secondary-button" type="button">全画面</button>
+    </div>
+  </header>
+
+  <main class="dashboard">
+    <section id="camera-panel" class="panel camera-panel" aria-labelledby="camera-heading">
+      <div class="panel-heading">
+        <div>
+          <span class="eyebrow">INPUT STREAM</span>
+          <h2 id="camera-heading">カメラ／合成入力</h2>
+        </div>
+        <button id="camera-toggle" class="text-button" type="button">映像を隠す</button>
+      </div>
+      <div class="camera-frame">
+        <img id="camera-preview" alt="追跡入力のプレビュー">
+        <div class="camera-reticle" aria-hidden="true"></div>
+      </div>
+      <div class="compact-grid">
+        <div><span>信頼度</span><strong id="confidence">--</strong></div>
+        <div><span>追跡</span><strong id="tracking-fps">--</strong></div>
+        <div><span>処理</span><strong id="inference-ms">--</strong></div>
+        <div><span>状態</span><strong id="stability">--</strong></div>
+      </div>
+      <div class="mono-readout">
+        <span>両眼中点 S</span>
+        <strong id="eye-position">--</strong>
+        <small id="pose-sequence" data-sequence="0">#0</small>
+      </div>
+    </section>
+
+    <section class="panel geometry-panel" aria-labelledby="geometry-heading">
+      <div class="panel-heading">
+        <div>
+          <span class="eyebrow">HARDWARE GEOMETRY</span>
+          <h2 id="geometry-heading">カメラ設置</h2>
+        </div>
+        <span id="mount-centered" class="mini-badge">--</span>
+      </div>
+      <div id="profile-warning" class="warning" hidden></div>
+      <div class="metric-primary">
+        <div>
+          <span>画面中心から上</span>
+          <strong id="mount-height">--</strong>
+        </div>
+        <div>
+          <span>法線から下向き</span>
+          <strong id="mount-pitch">--</strong>
+        </div>
+      </div>
+      <dl class="metric-list">
+        <div><dt>光軸の総傾斜</dt><dd id="mount-total-tilt">--</dd></div>
+        <div><dt>画面より手前</dt><dd id="mount-forward">--</dd></div>
+        <div><dt>左右オフセット</dt><dd id="mount-horizontal">--</dd></div>
+        <div><dt>有効表示寸法</dt><dd id="display-size">--</dd></div>
+      </dl>
+      <div class="profile-block">
+        <span>プロファイル</span>
+        <strong id="profile-id">--</strong>
+        <small id="profile-provenance">--</small>
+      </div>
+    </section>
+
+    <section class="panel calibration-panel" aria-labelledby="calibration-heading">
+      <div class="panel-heading">
+        <div>
+          <span class="eyebrow">CALIBRATION</span>
+          <h2 id="calibration-heading">5点 → 9点較正</h2>
+        </div>
+        <span class="mini-badge">HEAD RAYS</span>
+      </div>
+      <p class="panel-copy">
+        画面上の既知点へ顔正面を向けた複数姿勢から、カメラと画面の相対姿勢を推定します。
+        合成試験では真値を伏せた状態で36標本を最適化します。
+      </p>
+      <div class="target-grid" aria-label="3×3 calibration targets">
+        <i></i><i></i><i></i><i></i><i class="active"></i><i></i><i></i><i></i><i></i>
+      </div>
+      <button id="calibrate-synthetic" class="primary-button" type="button">合成較正を実行</button>
+      <div id="calibration-result" class="calibration-result" data-status="idle">
+        合成データ試験は未実行です。
+      </div>
+    </section>
+  </main>
+
+  <footer class="bottom-strip">
+    <span id="renderer-status">WebGL2を初期化中</span>
+    <span>座標系: 画面中央原点 / +X右 / +Y上 / +Z観察者側</span>
+    <span>表示対象: original synthetic bunny.pcd</span>
+  </footer>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

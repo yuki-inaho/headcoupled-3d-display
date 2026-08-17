@@ -1,0 +1,248 @@
+"""Validated data contracts shared by geometry, runtime, API, and tests."""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+Vector3 = tuple[float, float, float]
+Matrix4 = tuple[
+    tuple[float, float, float, float],
+    tuple[float, float, float, float],
+    tuple[float, float, float, float],
+    tuple[float, float, float, float],
+]
+
+
+def utc_now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+class StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class CameraIntrinsics(StrictModel):
+    image_width_px: int = Field(gt=0)
+    image_height_px: int = Field(gt=0)
+    camera_matrix: tuple[
+        tuple[float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+    ]
+    distortion_coefficients: tuple[float, ...] = ()
+    distortion_model: str = "plumb_bob"
+    rms_reprojection_error_px: float | None = Field(default=None, ge=0)
+
+    @field_validator("camera_matrix")
+    @classmethod
+    def validate_camera_matrix(
+        cls,
+        value: tuple[
+            tuple[float, float, float],
+            tuple[float, float, float],
+            tuple[float, float, float],
+        ],
+    ) -> tuple[
+        tuple[float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+    ]:
+        if value[0][0] <= 0 or value[1][1] <= 0:
+            raise ValueError("camera focal lengths must be positive")
+        if abs(value[2][2] - 1.0) > 1e-9:
+            raise ValueError("camera_matrix[2][2] must be 1")
+        return value
+
+
+class DisplaySpec(StrictModel):
+    pixel_width: int = Field(gt=0)
+    pixel_height: int = Field(gt=0)
+    width_m: float = Field(gt=0)
+    height_m: float = Field(gt=0)
+
+    @property
+    def aspect_ratio(self) -> float:
+        return self.width_m / self.height_m
+
+
+class CameraMount(StrictModel):
+    """Human-readable camera mount prior in the display coordinate frame.
+
+    Display frame: origin at active-area center, +X right, +Y up, +Z toward viewer.
+    Camera frame: OpenCV convention, +X image-right, +Y image-down, +Z optical forward.
+    Positive pitch_down_deg tilts the optical axis toward display -Y.
+    """
+
+    horizontal_offset_m: float = 0.0
+    height_above_center_m: float
+    forward_offset_m: float = 0.0
+    pitch_down_deg: float = 0.0
+    yaw_right_deg: float = 0.0
+    roll_clockwise_deg: float = 0.0
+
+    @field_validator("pitch_down_deg", "yaw_right_deg", "roll_clockwise_deg")
+    @classmethod
+    def validate_angle(cls, value: float) -> float:
+        if not -89.0 < value < 89.0:
+            raise ValueError("mount angles must be between -89 and 89 degrees")
+        return value
+
+
+class HardwareProfile(StrictModel):
+    schema_version: int = 1
+    profile_id: str
+    provenance: Literal[
+        "measured",
+        "estimated_from_head_targets",
+        "synthetic_demo_not_measured",
+    ]
+    display: DisplaySpec
+    camera: CameraIntrinsics
+    camera_mount: CameraMount
+    camera_to_display_matrix: Matrix4 | None = None
+    quality_metrics: dict[str, float | str | int | bool | None] = Field(default_factory=dict)
+    notes: tuple[str, ...] = ()
+    created_at: str = Field(default_factory=utc_now_iso)
+
+    @model_validator(mode="after")
+    def validate_schema(self) -> HardwareProfile:
+        if self.schema_version != 1:
+            raise ValueError(f"unsupported hardware profile schema: {self.schema_version}")
+        return self
+
+    @classmethod
+    def load(cls, path: Path) -> HardwareProfile:
+        with path.open(encoding="utf-8") as handle:
+            return cls.model_validate(json.load(handle))
+
+    def save(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            self.model_dump_json(indent=2, exclude_none=True) + "\n",
+            encoding="utf-8",
+        )
+
+
+class UserProfile(StrictModel):
+    schema_version: int = 1
+    profile_id: str = "default-user"
+    ipd_m: float = Field(default=0.064, gt=0.04, lt=0.09)
+    left_eye_center_head_m: Vector3 = (-0.032, 0.030, -0.020)
+    right_eye_center_head_m: Vector3 = (0.032, 0.030, -0.020)
+    cyclopean_eye_head_m: Vector3 = (0.0, 0.030, -0.020)
+    neutral_forward_axis_head: Vector3 = (0.0, 0.0, 1.0)
+    forward_axis_yaw_correction_deg: float = 0.0
+    forward_axis_pitch_correction_deg: float = 0.0
+    quality_metrics: dict[str, float | str | int | bool | None] = Field(default_factory=dict)
+    created_at: str = Field(default_factory=utc_now_iso)
+
+    @classmethod
+    def load(cls, path: Path) -> UserProfile:
+        with path.open(encoding="utf-8") as handle:
+            return cls.model_validate(json.load(handle))
+
+    def save(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self.model_dump_json(indent=2) + "\n", encoding="utf-8")
+
+
+class MountSummary(StrictModel):
+    horizontal_offset_cm: float
+    height_above_center_cm: float
+    forward_offset_cm: float
+    pitch_down_deg: float
+    yaw_right_deg: float
+    roll_clockwise_deg: float
+    total_axis_tilt_from_display_normal_deg: float
+    horizontally_centered: bool
+
+
+class TrackingState(StrictModel):
+    sequence: int = Field(ge=0)
+    timestamp_unix_s: float
+    source: Literal["synthetic", "facemesh"]
+    confidence: float = Field(ge=0.0, le=1.0)
+    cyclopean_eye_display_m: Vector3
+    left_eye_display_m: Vector3
+    right_eye_display_m: Vector3
+    head_forward_display: Vector3
+    tracking_fps: float = Field(ge=0)
+    inference_ms: float = Field(ge=0)
+    stable: bool
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+
+class CalibrationSample(StrictModel):
+    target_uv: tuple[float, float]
+    cyclopean_eye_camera_m: Vector3
+    head_forward_camera: Vector3
+    confidence: float = Field(default=1.0, gt=0.0, le=1.0)
+    sample_id: str = ""
+
+    @field_validator("target_uv")
+    @classmethod
+    def validate_uv(cls, value: tuple[float, float]) -> tuple[float, float]:
+        if not all(0.0 <= component <= 1.0 for component in value):
+            raise ValueError("target_uv components must be in [0, 1]")
+        return value
+
+
+class CalibrationDataset(StrictModel):
+    schema_version: int = 1
+    display: DisplaySpec
+    samples: tuple[CalibrationSample, ...]
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_dataset(self) -> CalibrationDataset:
+        if len(self.samples) < 10:
+            raise ValueError("at least 10 samples are required")
+        unique_targets = {sample.target_uv for sample in self.samples}
+        if len(unique_targets) < 5:
+            raise ValueError("at least 5 unique display targets are required")
+        return self
+
+    @classmethod
+    def load(cls, path: Path) -> CalibrationDataset:
+        with path.open(encoding="utf-8") as handle:
+            return cls.model_validate(json.load(handle))
+
+    def save(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self.model_dump_json(indent=2) + "\n", encoding="utf-8")
+
+
+class CalibrationMetrics(StrictModel):
+    sample_count: int
+    unique_target_count: int
+    mean_point_to_ray_error_mm: float
+    median_point_to_ray_error_mm: float
+    max_point_to_ray_error_mm: float
+    mean_angular_error_deg: float
+    max_angular_error_deg: float
+    optimizer_cost: float
+    optimizer_evaluations: int
+    optimizer_success: bool
+    optimizer_message: str
+
+
+class CalibrationResult(StrictModel):
+    estimated_camera_to_display_matrix: Matrix4
+    mount_summary: MountSummary
+    metrics: CalibrationMetrics
+    estimated_profile: HardwareProfile
+    comparison_to_ground_truth: dict[str, float] | None = None
+
+
+class RuntimeStatus(StrictModel):
+    running: bool
+    source: str
+    sequence: int
+    profile_id: str
+    provenance: str
+    last_error: str | None = None

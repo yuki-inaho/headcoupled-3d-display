@@ -1,0 +1,22 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.ty_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
+
+# Recordings, keyframes and calibration output. Kept out of the repository
+# because a single session is tens of megabytes of video.
+artifacts/
+
+# Unpacked source archive.
+temp/
+
+# Editor and tooling state.
+.serena/
+.DS_Store
+Thumbs.db

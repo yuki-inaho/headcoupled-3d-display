@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "profile_id": "demo-user",
+  "ipd_m": 0.064,
+  "left_eye_center_head_m": [-0.032, 0.03, -0.02],
+  "right_eye_center_head_m": [0.032, 0.03, -0.02],
+  "cyclopean_eye_head_m": [0.0, 0.03, -0.02],
+  "neutral_forward_axis_head": [0.0, 0.0, 1.0],
+  "forward_axis_yaw_correction_deg": 0.0,
+  "forward_axis_pitch_correction_deg": 0.0,
+  "quality_metrics": {
+    "demo_only": true
+  },
+  "created_at": "2026-08-17T00:00:00+00:00"
+}

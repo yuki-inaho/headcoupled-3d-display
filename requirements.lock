@@ -1,0 +1,37 @@
+# Fully pinned Python 3.13/Linux environment used for controller, tests, and Playwright.
+# Generated from the tested environment's installed dependency closure.
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.13.0
+certifi==2026.5.20
+click==8.1.8
+fastapi==0.128.2
+greenlet==3.5.1
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.17
+iniconfig==2.3.0
+markdown-it-py==4.2.0
+mdurl==0.1.2
+numpy==2.3.5
+opencv-python==4.13.0.92
+packaging==25.0
+playwright==1.57.0
+pluggy==1.6.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+pyee==13.0.1
+Pygments==2.20.0
+pytest==9.0.2
+PyYAML==6.0.3
+rich==15.0.0
+ruff==0.15.4
+scipy==1.17.0
+shellingham==1.5.4
+starlette==0.50.0
+typer==0.26.3
+typing-inspection==0.4.2
+typing_extensions==4.16.0
+uvicorn==0.48.0
+websockets==17.0.1

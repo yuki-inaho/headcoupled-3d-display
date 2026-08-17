@@ -1,0 +1,46 @@
+[project]
+name = "facemesh-tracking"
+version = "0.2.0"
+description = "FaceMesh dense landmark estimation on onnxruntime-gpu (YOLOv8-Face + MediaPipe FaceMesh via UniFace)"
+readme = "README.md"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "numpy>=1.23,<2",
+    "onnxruntime-gpu==1.18.0",
+    "opencv-python>=4.9,<5",
+    # CUDA 11.8 / cuDNN 8.x runtime shipped inside the venv.
+    # onnxruntime-gpu 1.18.0 is built against CUDA 11.8 + cuDNN 8.9, and cuDNN 9
+    # ships no Conv kernels for Pascal (sm_61), so the system cuDNN 9 must not be used.
+    "nvidia-cudnn-cu11>=8.9,<9",
+    "nvidia-cublas-cu11>=11.11",
+    "nvidia-cuda-runtime-cu11>=11.8",
+    "nvidia-cufft-cu11>=10.9",
+    "nvidia-curand-cu11>=10.3",
+    "uniface>=4.0.0",
+]
+
+[project.scripts]
+facemesh = "facemesh_tracking.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/facemesh_tracking"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
