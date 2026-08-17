@@ -56,6 +56,11 @@ STAGE_NAMES: tuple[str, ...] = (
     "capture_decode",
     "detector",
     "landmarks",
+    #: Detector plus landmarks timed as one block. Reported alongside the individual
+    #: stages because a percentile of a sum is not the sum of percentiles: on this
+    #: recording p50(detector) + p50(landmarks) came to 42.7 ms while the measured p50
+    #: of the combined block was 59.4 ms. Threshold checks must use this stage.
+    "recognition_total",
     "packet_build",
     "preview_resize_encode",
 )
@@ -65,7 +70,10 @@ STAGE_SEPARATION_NOTE = (
     "pipeline.detector.detect() plus the box.expanded() margin step (0.0 margin_ratio "
     "here), following facemesh_tracking.cli.cmd_bench's convention; 'landmarks' times "
     "pipeline.estimator.estimate() alone. Detector and landmarks were NOT collapsed "
-    "into a single inference_total stage."
+    "into a single inference_total stage. 'recognition_total' additionally reports "
+    "detector+landmarks timed as one block; it is derived from the same two "
+    "measurements (detector_ns + landmarks_ns), so it is exact rather than a "
+    "re-timing, and it is what the threshold check must use."
 )
 
 _T = TypeVar("_T")
@@ -187,6 +195,10 @@ class _FrameSample:
     preview_bytes: int
     missing_face: bool
 
+    @property
+    def recognition_total_ns(self) -> int:
+        return self.detector_ns + self.landmarks_ns
+
 
 def _process_decoded_frame(
     pipeline: Any, frame: Any, frame_index: int, args: argparse.Namespace, capture_decode_ns: int
@@ -256,6 +268,7 @@ def _decode_and_measure(
             stage_samples_ns["capture_decode"].append(sample.capture_decode_ns)
             stage_samples_ns["detector"].append(sample.detector_ns)
             stage_samples_ns["landmarks"].append(sample.landmarks_ns)
+            stage_samples_ns["recognition_total"].append(sample.recognition_total_ns)
             stage_samples_ns["packet_build"].append(sample.packet_build_ns)
             stage_samples_ns["preview_resize_encode"].append(sample.preview_ns)
 

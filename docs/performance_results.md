@@ -81,3 +81,27 @@ refresh=1 へ戻して精度を守り、性能未達を記録する。閾値を�
 窓を回さない）。したがって 1° の角度閾値は、現在の表示経路が使っていない量を判定している。
 一方、表示に直接効く眼位置 p95 ≤ 5 mm は interval 2–15 と 30 で満たされている。
 **この閾値を見直すかどうかは成功条件の変更にあたるため、本作業では変更していない。**
+
+### 手順7: 現行録画ベースライン — 2026-08-17T07:38:36.254954+00:00 (commit `f6c4abf341c7`)
+
+- **コマンド:** `just benchmark-recorded`
+- **commit:** `f6c4abf341c746e47fa22894eb9eb3ac14c08ac1`
+- **入力:** `/home/inaho-omen/Project/facemesh_tracking/recordings/test10.avi` (1280x720, frame_count=294, warmup=5)
+- **provider:** `CUDAExecutionProvider`
+- **clock_domain:** `monotonic_ns` (uncertainty 0.000001 ms)
+- **raw JSON:** `artifacts/perf/baseline_recorded_raw.json` (SHA-256: `9aeb300b3b079fb3d5af4298ff0d1b27298bdcdb317058e55ad29c272b1f1565`)
+- **欠測フレーム数:** 0
+- **計測時刻 (created_at):** 2026-08-17T07:38:36.254954+00:00
+
+- **参考桁確認:** detector + landmarks の p50 合計 48.84 ms は 既知の静止画ベンチ mean≈33.16 ms と同桁（比 1.47 倍）。過去値は成功判定の固定基準ではなく参考のみ。
+
+| stage | sample_count | p50 (ms) | p95 (ms) | p99 (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| capture_decode | 289 | 9.031 | 13.043 | 20.702 |
+| detector | 289 | 33.416 | 50.107 | 93.212 |
+| landmarks | 289 | 15.421 | 22.855 | 46.683 |
+| recognition_total | 289 | 48.963 | 73.632 | 141.260 |
+| packet_build | 289 | 3.117 | 4.892 | 9.976 |
+| preview_resize_encode | 289 | 3.048 | 4.397 | 6.104 |
+
+**判定:** PASS — CUDA providerが実行中で、全段のp50/p95/p99が採取・検証された（このステップはベースライン記録であり、閾値ゲートは後続手順で行う）。
