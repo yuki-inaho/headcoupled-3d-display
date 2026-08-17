@@ -8,6 +8,45 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
+def _read_blocking_policy(path: Path) -> tuple[bytes, dict[str, object]] | None:
+    try:
+        original = path.read_bytes()
+        policy = json.loads(original)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(policy, dict):
+        return None
+    blocklist = policy.get("URLBlocklist")
+    if not isinstance(blocklist, list) or "*" not in blocklist:
+        return None
+    return original, policy
+
+
+def _allow_localhost(policy: dict[str, object]) -> str:
+    policy.pop("URLBlocklist", None)
+    allowlist = policy.setdefault("URLAllowlist", [])
+    if not isinstance(allowlist, list):
+        raise ValueError("Chromium URLAllowlist policy must be a list")
+    for pattern in ("http://127.0.0.1:*", "http://localhost:*"):
+        if pattern not in allowlist:
+            allowlist.append(pattern)
+    return json.dumps(policy, indent=2) + "\n"
+
+
+def _make_policy_testable(path: Path) -> bytes | None:
+    if not path.parent.is_dir() or not path.exists():
+        return None
+    loaded = _read_blocking_policy(path)
+    if loaded is None:
+        return None
+    original, policy = loaded
+    try:
+        path.write_text(_allow_localhost(policy), encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    return original
+
+
 @contextmanager
 def allow_localhost_for_managed_chromium() -> Iterator[None]:
     """Remove a global URLBlocklist only for the lifetime of a browser smoke test.
@@ -22,26 +61,9 @@ def allow_localhost_for_managed_chromium() -> Iterator[None]:
     backups: dict[Path, bytes] = {}
     try:
         for path in candidates:
-            try:
-                original = path.read_bytes()
-                data = json.loads(original)
-            except (OSError, json.JSONDecodeError):
-                continue
-            blocklist = data.get("URLBlocklist")
-            if not isinstance(blocklist, list) or "*" not in blocklist:
-                continue
-            if not path.parent.is_dir() or not path.exists():
-                continue
-            try:
+            original = _make_policy_testable(path)
+            if original is not None:
                 backups[path] = original
-                data.pop("URLBlocklist", None)
-                allowlist = data.setdefault("URLAllowlist", [])
-                for pattern in ("http://127.0.0.1:*", "http://localhost:*"):
-                    if pattern not in allowlist:
-                        allowlist.append(pattern)
-                path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-            except PermissionError:
-                backups.pop(path, None)
         yield
     finally:
         for path, original in backups.items():

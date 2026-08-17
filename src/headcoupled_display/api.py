@@ -6,8 +6,9 @@ import asyncio
 import os
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
@@ -77,14 +78,29 @@ def _provider_factory(
     )
 
 
-def create_app(
+@dataclass(frozen=True)
+class _ApplicationContext:
+    hardware: HardwareProfile
+    user: UserProfile
+    runtime: RuntimeCoordinator
+    source: Literal["synthetic", "facemesh"]
+
+
+def _select_source(source: Literal["synthetic", "facemesh"] | None) -> Literal["synthetic", "facemesh"]:
+    selected = source or os.getenv("HEADCOUPLED_SOURCE", "synthetic")
+    if selected not in {"synthetic", "facemesh"}:
+        raise ValueError(f"unsupported tracking source: {selected}")
+    return cast(Literal["synthetic", "facemesh"], selected)
+
+
+def _build_context(
     *,
     profile_path: Path | None = None,
     user_profile_path: Path | None = None,
     source: Literal["synthetic", "facemesh"] | None = None,
     camera_index: int = 0,
     backend: str = "cpu",
-) -> FastAPI:
+) -> _ApplicationContext:
     hardware = profile_with_resolved_matrix(
         HardwareProfile.load(profile_path or default_hardware_profile_path())
     )
@@ -93,12 +109,7 @@ def create_app(
     # before a real camera is attached.
     if user.face_model_path is not None:
         load_personal_face_model(Path(user.face_model_path))
-    selected_source: Literal["synthetic", "facemesh"] = source or os.getenv(
-        "HEADCOUPLED_SOURCE", "synthetic"
-    )  # type: ignore[assignment]
-    if selected_source not in {"synthetic", "facemesh"}:
-        raise ValueError(f"unsupported tracking source: {selected_source}")
-
+    selected_source = _select_source(source)
     runtime = RuntimeCoordinator(
         hardware,
         _provider_factory(
@@ -109,26 +120,33 @@ def create_app(
             backend=backend,
         ),
     )
+    return _ApplicationContext(hardware=hardware, user=user, runtime=runtime, source=selected_source)
 
+
+def _lifespan(context: _ApplicationContext) -> Callable[[FastAPI], AsyncIterator[None]]:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        app.state.hardware_profile = hardware
-        app.state.user_profile = user
-        app.state.runtime = runtime
-        app.state.source = selected_source
+        app.state.hardware_profile = context.hardware
+        app.state.user_profile = context.user
+        app.state.runtime = context.runtime
+        app.state.source = context.source
         app.state.last_calibration = None
-        await runtime.start()
+        await context.runtime.start()
         try:
             yield
         finally:
-            await runtime.stop()
+            await context.runtime.stop()
 
-    application = FastAPI(
-        title="Head-Coupled 3D Display",
-        version="0.1.0",
-        lifespan=lifespan,
+    return lifespan
+
+
+def _register_http_routes(application: FastAPI, context: _ApplicationContext) -> None:
+    hardware, user, runtime, selected_source = (
+        context.hardware,
+        context.user,
+        context.runtime,
+        context.source,
     )
-    application.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
 
     @application.get("/", include_in_schema=False)
     async def index() -> FileResponse:
@@ -199,6 +217,9 @@ def create_app(
             "result": None if result is None else result.model_dump(mode="json"),
         }
 
+
+def _register_websocket_routes(application: FastAPI, runtime: RuntimeCoordinator) -> None:
+
     @application.websocket("/ws/pose")
     async def pose_websocket(websocket: WebSocket) -> None:
         await websocket.accept()
@@ -228,6 +249,31 @@ def create_app(
                 await websocket.send_bytes(frame)
         except WebSocketDisconnect:
             return
+
+
+def create_app(
+    *,
+    profile_path: Path | None = None,
+    user_profile_path: Path | None = None,
+    source: Literal["synthetic", "facemesh"] | None = None,
+    camera_index: int = 0,
+    backend: str = "cpu",
+) -> FastAPI:
+    context = _build_context(
+        profile_path=profile_path,
+        user_profile_path=user_profile_path,
+        source=source,
+        camera_index=camera_index,
+        backend=backend,
+    )
+    application = FastAPI(
+        title="Head-Coupled 3D Display",
+        version="0.1.0",
+        lifespan=_lifespan(context),
+    )
+    application.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
+    _register_http_routes(application, context)
+    _register_websocket_routes(application, context.runtime)
 
     return application
 
