@@ -162,13 +162,16 @@ def measure_clock_offset(page: object) -> dict[str, float]:
     Success condition 10 subtracts a producer Unix timestamp from a browser one. Those
     are two clocks; assuming they agree is the thing this measurement exists to stop.
     The request is bracketed by two browser readings, so the offset is known to within
-    half the round trip, and that half-round-trip is reported as the uncertainty.
+    half the round trip, and that half-round-trip is reported as the uncertainty. The
+    fastest exchange of many is kept, which is standard NTP practice: a slow exchange
+    only ever widens the bound, never narrows it, so taking the minimum is the tightest
+    honest bound rather than a relaxation of one.
     """
 
     return page.evaluate(
         """async () => {
             const samples = [];
-            for (let i = 0; i < 5; i += 1) {
+            for (let i = 0; i < 25; i += 1) {
                 const before = performance.timeOrigin + performance.now();
                 const payload = await (await fetch('/api/health', {cache: 'no-store'})).json();
                 const after = performance.timeOrigin + performance.now();

@@ -136,7 +136,7 @@ E2E テストは CPU 描画時間だけを assert し、receive→draw は
 `scripts/validate_performance.py` が判定できるよう JSON に書き出す。こうすることで、
 CI 機で必ず落ちるテストにも、通るまで閾値を緩めた判定にもならない。
 
-### 手順40 / 成功条件10: 録画+実CUDA推論の本番相当E2E — 2026-08-17
+### 手順40 / 成功条件10: 録画+実CUDA推論の本番相当E2E — 2026-08-17（再測定・訂正）
 
 - **コマンド:** `just test-e2e-recorded-cuda`
 - **経路:** `test10.avi` → **実CUDA FaceMesh推論**（Python 3.10環境）→ 採用IPC（2レーン）→
@@ -145,29 +145,43 @@ CI 機で必ず落ちるテストにも、通るまで閾値を緩めた判定�
 - **producer:** `--source test10.avi --pacing realtime --backend cuda --max-frames 120`
 - **raw:** `artifacts/perf/recorded_cuda_e2e.json`
 
-| 指標 | 実測 | 閾値 | 判定 |
-| :--- | ---: | ---: | :--- |
-| 推論完了→WebGL median | 60.674 ms | ≤ 33 ms | **FAIL** |
-| 推論完了→WebGL p95 | 87.829 ms | ≤ 60 ms | **FAIL** |
-| receive→draw p95 | 67.200 ms | ≤ 16.7 ms | FAIL |
-| CPU 描画 p95 | 0.800 ms | ≤ 4 ms | PASS |
-| **プレビュー解像度** | **640 × 360** | 640×360 | **PASS** |
-| sequence 逆転 | 0 | 0 | PASS |
-| renderer | WebGL2 | — | — |
-| source | `ipc` | — | — |
-| 描画間隔 p50 | 493.200 ms | — | — |
+**通ったこと（経路の成立）**
 
-**通ったこと:** 録画から実CUDA推論を経て2レーンIPC・実測内部パラメータ・個人メッシュ・
-確認済み設置値を通り、WebGL2 の非対称投影まで**production経路がそのまま動作した**。
-プレビューは 640×360 で届き、サーバーは再エンコードしていない。sequence 逆転は0。
+| 指標 | 実測 | 判定 |
+| :--- | :--- | :--- |
+| production経路の完走 | 録画→実CUDA→2レーンIPC→12点SQPNP→WebGL2 | **成立** |
+| プレビュー解像度 | 640 × 360 | **PASS** |
+| sequence 逆転 | 0 | **PASS** |
+| renderer | WebGL2 | — |
+| source | `ipc` | — |
+| CPU 描画 p95 | 0.6 〜 1.6 ms（閾値 4 ms） | **PASS** |
 
-**未達:** 推論完了→WebGL の median 60.674 ms / p95 87.829 ms は閾値を超える。ただし
-内訳を見ると **receive→draw だけで p95 67.200 ms** を占め、その下限である描画間隔 p50 は
-**493.2 ms** である。成功条件9と同じく、headless Chromium の requestAnimationFrame 絞りが
-支配的であり、認識側やIPC側の遅さではない（CPU描画は 0.800 ms）。
+**成功条件10（推論完了→WebGL）: この環境では評価できない**
 
-**閾値は緩めない。成功条件10は未達のまま残す。**正しい判定には物理ディスプレイ上での
-再計測が必要で、それは実カメラ受け入れと同じく本作業の非ゴールである。
+複数回実行した結果は次のとおり大きくばらつく。
+
+| run | median | p95 | 描画間隔 p50 | 時計不確かさ |
+| :--- | ---: | ---: | ---: | ---: |
+| 1 | 60.674 ms | 87.829 ms | 493.200 ms | 未計測 |
+| 2（外部レビュー） | 123.295 ms | 246.013 ms | — | 未計測 |
+| 3 | 47.615 ms | 65.393 ms | 373.300 ms | **5.550 ms** |
+| 4（時計25サンプル） | 48.761 ms | 119.907 ms | **1008.200 ms** | **5.500 ms** |
+
+**判定: REJECTED（FAILではなく、測定として成立していない）。** 理由は2つ。
+
+1. **時計不確かさが閾値を超える。** 作業書は「clock逆行または2 ms超の時刻不確かさがある
+   runを拒否する」と定めている。producer の Unix 時刻からブラウザーの Unix 時刻を引く以上、
+   両者のズレを測らなければ差分は検証されていない。`/api/health` の `server_unix_ns` を
+   2つのローカル読みで挟むNTP方式で25回測り、最速の交換を採っても
+   **不確かさは 5.5 ms** で 2 ms を超える（オフセット自体は -1.7 ms と小さく、同一ホスト
+   なので当然だが、往復時間が絞られない）。判定器はこの run を明示的に拒否する。
+2. **描画間隔がレイテンシを支配し、しかも安定しない。** 373 ms 〜 1008 ms（約 1〜3 fps）。
+   headless Chromium が requestAnimationFrame を絞っており、姿勢は「次のフレーム」より
+   早くは表示できない。CPU 描画は 0.6〜1.6 ms なので、レンダラー側の遅さではない。
+
+**閾値は緩めない。成功条件10は未達のまま残す。**正しい判定には、物理ディスプレイに
+接続し、コンポジタが実表示のリフレッシュ周期で回る環境での再計測が必要である。それは
+実カメラ受け入れと同じく本作業の非ゴールである。
 
 ### 判定器の総合結果（`scripts/validate_performance.py`）
 
@@ -215,3 +229,73 @@ CPU を消費していた。
 **判定: FAIL。DoD-7 は未達。** 判定器 `control_transport` は worst-run 値を必須とし、
 この実測に対して fail を返す。実装は HTTP で進めたが、それは暗黙採用ではなく
 `docs/performance_design.md` §5.3 に明記した判断であり、**ゲートを通ったという主張はしない**。
+
+### 手順7: 現行録画ベースライン — 2026-08-17T11:28:43.356337+00:00 (commit `040a4c2a78dc`)
+
+- **コマンド:** `just benchmark-recorded (final, after review fixes)`
+- **commit:** `040a4c2a78dc7acbea0522b1ecb4bd9ba1641f93`
+- **入力:** `/home/inaho-omen/Project/facemesh_tracking/recordings/test10.avi` (1280x720, frame_count=294, warmup=5)
+- **provider:** `CUDAExecutionProvider`
+- **clock_domain:** `monotonic_ns` (uncertainty 0.000001 ms)
+- **raw JSON:** `artifacts/perf/baseline_recorded_raw.json` (SHA-256: `325ead08247677a66ace29f880540af10b6f034ed4771e70e805975d12232321`)
+- **欠測フレーム数:** 0
+- **計測時刻 (created_at):** 2026-08-17T11:28:43.356337+00:00
+
+- **参考桁確認:** detector + landmarks の p50 合計 59.43 ms は 既知の静止画ベンチ mean≈33.16 ms と同桁（比 1.79 倍）。過去値は成功判定の固定基準ではなく参考のみ。
+
+| stage | sample_count | p50 (ms) | p95 (ms) | p99 (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| capture_decode | 289 | 10.617 | 28.808 | 163.487 |
+| detector | 289 | 39.963 | 75.098 | 106.205 |
+| landmarks | 289 | 19.463 | 37.883 | 54.517 |
+| recognition_total | 289 | 61.312 | 106.738 | 147.095 |
+| packet_build | 289 | 3.698 | 7.771 | 11.733 |
+| preview_resize_encode | 289 | 3.319 | 6.885 | 9.551 |
+
+**判定:** PASS — CUDA providerが実行中で、全段のp50/p95/p99が採取・検証された（このステップはベースライン記録であり、閾値ゲートは後続手順で行う）。
+
+### 最終証跡と総合判定 — 2026-08-17（外部レビュー是正後）
+
+- **判定対象 commit:** `040a4c2a78dc7acbea0522b1ecb4bd9ba1641f93`
+- **成果物:** `artifacts/perf/final/`（`.gitignore` 対象。再実行で再生成できる）
+- **コマンド:** `just validate-performance --final artifacts/perf/final/recognition.json --baseline artifacts/perf/baseline_recorded.json --missing-faces 0 --browser ... --transport ... --accuracy ... --preview ... --end-to-end ... --output artifacts/perf/final/verdict.json`
+
+| ファイル | SHA-256 |
+| :--- | :--- |
+| `accuracy.json` | `3e8b780a43e51e75b2541679f69ee205b09ab40653182a350cb06ebafc511c55` |
+| `browser_timing.json` | `3ef89a9bcc798d30caa5cb67518a908c5fe8f8d01bafaac03b0f71f7857d0919` |
+| `end_to_end.json` | `9ed3fb4380beb5216e64f495ca8aaa13fa45bd718124a383d5f00bef6b5cfabd` |
+| `preview.json` | `e0e5cd33e210bb7f68661daf593c0c69344fe1ec3cab73104752b6e63ca1f43c` |
+| `recognition.json` | `0e4ee2dc56bd8af5882db848fd93464363ace169858e324cae37845fea5d7238` |
+| `recognition_raw.json` | `325ead08247677a66ace29f880540af10b6f034ed4771e70e805975d12232321` |
+| `refresh_sweep.json` | `7a8a1432655bbd9ef004090f32a97a75ddbf3e111af7422d6c679cbcac1af629` |
+| `refresh_sweep_long.json` | `523c21d00a83f1458f54192f8f3fe846b981cf5ec90389b970dcea4472c4d466` |
+| `transport.json` | `b5997ce46716f1e3427e6fcbd2ceb30fa53042412dcae73ec12d605080551223` |
+| `transport_comparison.json` | `4424835192f698bf795de81bc2cec5d7840128419021247261456884e84e693d` |
+| `verdict.json` | `4baa4d5d313eb0d5588494a941d8bf1515f804e3400feb4b5621f553018e4a99` |
+
+| 条件 | チェック | 判定 |
+| :--- | :--- | :--- |
+| 前提 | `clock_uncertainty` | PASS |
+| 成功条件4 | `cuda_provider` | PASS |
+| 成功条件5 | `frame_completeness` | PASS |
+| 成功条件5 | `accuracy_vs_full_detect` | PASS |
+| 成功条件6 | `recognition_latency` | **FAIL** |
+| 成功条件7 | `control_transport` | **FAIL** |
+| 成功条件8 | `preview_lane` | PASS |
+| 成功条件9 | `browser_draw` | **FAIL** |
+| 成功条件10 | `inference_to_webgl` | **FAIL** |
+
+**総合 FAIL（9件中 4件が未達）。**
+
+未達4件の内訳と、それぞれ何が原因かは上の各節に数値つきで記録してある。
+**閾値の緩和も、未計測の pass 扱いも行っていない。**
+
+- 成功条件6（認識レイテンシ）: 全検出が構造的に p95 を支配する。時系列ROIは精度と
+  遅延を同時に満たす N が存在しなかったため既定にしていない。
+- 成功条件7（transport）: 全4候補が worst-run 基準で不合格。実装は HTTP で進めたが
+  ゲートを通ったという主張はしない。
+- 成功条件9・10（ブラウザー描画 / 推論→WebGL）: headless SwiftShader のコンポジタ
+  周期（373〜1008 ms）が支配的で、成功条件10 は時計不確かさ 5.5 ms > 2 ms により
+  run 自体が拒否される。物理ディスプレイでの再計測が必要。
+
