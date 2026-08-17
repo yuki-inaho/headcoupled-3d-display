@@ -711,3 +711,83 @@ def test_aspect_guard_reports_mismatch_against_the_physical_display() -> None:
     finally:
         if process is not None:
             terminate_child(process)
+
+
+@pytest.mark.e2e
+def test_confirmed_mount_profile_reaches_the_dashboard_readout() -> None:
+    """The confirmed 15 cm / 12 deg mount must be visible in the UI, not just the API.
+
+    Uses config/hardware_profile.local.json rather than the demo profile, and asserts the
+    displayed values differ from the demo's 20 cm / 10 deg so the two cannot be confused.
+    """
+    port = free_port()
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYTHONPATH": str(ROOT / "src"),
+            "HEADCOUPLED_PROFILE": str(ROOT / "config" / "hardware_profile.local.json"),
+            "HEADCOUPLED_SCENE": str(ROOT / "config" / "scene_profile.default.json"),
+            "HEADCOUPLED_SOURCE": "synthetic",
+        }
+    )
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "headcoupled_display.api:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--log-level",
+            "warning",
+        ],
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        wait_for_server(f"{base_url}/api/health", process)
+        with allow_localhost_for_managed_chromium(), sync_playwright() as playwright:
+            browser = playwright.chromium.launch(
+                headless=True,
+                executable_path=os.getenv("HEADCOUPLED_CHROMIUM") or None,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--enable-webgl",
+                    "--ignore-gpu-blocklist",
+                    "--use-angle=swiftshader",
+                ],
+            )
+            page = browser.new_page()
+            page.goto(base_url, wait_until="domcontentloaded")
+            page.wait_for_function("() => document.body.dataset.ready === 'true'", timeout=20000)
+            readout = {
+                key: page.locator(f"#{key}").inner_text()
+                for key in (
+                    "mount-height",
+                    "mount-pitch",
+                    "mount-forward",
+                    "mount-horizontal",
+                    "mount-centered",
+                    "profile-id",
+                    "profile-provenance",
+                )
+            }
+            browser.close()
+    finally:
+        terminate_child(process)
+
+    assert readout["mount-height"] == "15.0 cm"
+    assert readout["mount-pitch"] == "12.0°"
+    assert readout["mount-forward"] == "0.0 cm"
+    assert readout["mount-horizontal"] == "0.0 cm"
+    assert readout["mount-centered"] == "中央"
+    assert readout["profile-id"] == "local-confirmed-camera-mount"
+    # Not "measured": K, D and the display size are still demo placeholders.
+    assert readout["profile-provenance"] == "user_confirmed_mount_synthetic_intrinsics"
