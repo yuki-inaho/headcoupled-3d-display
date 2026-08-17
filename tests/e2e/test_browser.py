@@ -9,9 +9,16 @@ import time
 import urllib.request
 from pathlib import Path
 
+import numpy as np
 import pytest
 from playwright.sync_api import sync_playwright
 
+from headcoupled_display.face_model import (
+    HEAD_TO_OPENCV,
+    LEFT_IRIS_CENTRE,
+    RIGHT_IRIS_CENTRE,
+    canonical_face_model,
+)
 from headcoupled_display.testing_support import allow_localhost_for_managed_chromium
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,16 +46,39 @@ def wait_for_server(url: str, process: subprocess.Popen[str], timeout_s: float =
     raise TimeoutError(f"server did not become ready: {url}")
 
 
+def write_valid_personal_pcd(path: Path) -> None:
+    """Make a deterministic reconstructed-model fixture in its documented PCD frame."""
+
+    points_head_m = np.zeros((478, 3), dtype=np.float64)
+    points_head_m[:468] = canonical_face_model().points_head_m
+    points_head_m[LEFT_IRIS_CENTRE] = (-0.031, 0.026, 0.030)
+    points_head_m[RIGHT_IRIS_CENTRE] = (0.033, 0.027, 0.031)
+    points_opencv_mm = points_head_m * HEAD_TO_OPENCV * 1000.0
+    path.write_text(
+        "# .PCD v0.7 - Point Cloud Data file format\n"
+        "VERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\n"
+        "WIDTH 478\nHEIGHT 1\nVIEWPOINT 0 0 0 1 0 0 0\nPOINTS 478\nDATA ascii\n"
+        + "".join(f"{x:.6f} {y:.6f} {z:.6f}\n" for x, y, z in points_opencv_mm),
+        encoding="ascii",
+    )
+
+
 @pytest.mark.e2e
-def test_dashboard_websocket_renderer_and_calibration() -> None:
+def test_dashboard_websocket_renderer_and_calibration(tmp_path: Path) -> None:
     ARTIFACTS.mkdir(exist_ok=True)
     port = free_port()
+    personal_mesh = tmp_path / "shape.pcd"
+    write_valid_personal_pcd(personal_mesh)
+    user_profile = json.loads((ROOT / "config" / "user_profile.demo.json").read_text())
+    user_profile["face_model_path"] = "shape.pcd"
+    user_profile_path = tmp_path / "user_profile.json"
+    user_profile_path.write_text(json.dumps(user_profile), encoding="utf-8")
     env = os.environ.copy()
     env.update(
         {
             "PYTHONPATH": str(ROOT / "src"),
             "HEADCOUPLED_PROFILE": str(ROOT / "config" / "hardware_profile.demo.json"),
-            "HEADCOUPLED_USER_PROFILE": str(ROOT / "config" / "user_profile.demo.json"),
+            "HEADCOUPLED_USER_PROFILE": str(user_profile_path),
             "HEADCOUPLED_SOURCE": "synthetic",
         }
     )
@@ -106,6 +136,9 @@ def test_dashboard_websocket_renderer_and_calibration() -> None:
             assert "10.0°" in page.locator("#mount-pitch").inner_text()
             assert "13,810 points" in page.locator("#renderer-status").inner_text()
             assert page.locator("#camera-preview").get_attribute("src", timeout=10_000).startswith("blob:")
+            with urllib.request.urlopen(f"{base_url}/api/profile") as response:
+                profile = json.loads(response.read())
+            assert profile["user_profile"]["face_model_path"] == str(personal_mesh.resolve())
 
             page.locator("#calibrate-synthetic").click()
             page.wait_for_function(
