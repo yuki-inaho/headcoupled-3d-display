@@ -63,7 +63,7 @@ def _provider_factory(
     hardware: HardwareProfile,
     user: UserProfile,
     *,
-    camera_index: int,
+    camera_device: str,
     backend: str,
 ) -> Callable[[], TrackingProvider]:
     if source == "synthetic":
@@ -71,7 +71,7 @@ def _provider_factory(
     return lambda: FaceMeshTrackingProvider(
         hardware,
         user,
-        camera_index=camera_index,
+        camera_device=camera_device,
         backend=backend,
         width=hardware.camera.image_width_px,
         height=hardware.camera.image_height_px,
@@ -98,7 +98,7 @@ def _build_context(
     profile_path: Path | None = None,
     user_profile_path: Path | None = None,
     source: Literal["synthetic", "facemesh"] | None = None,
-    camera_index: int = 0,
+    camera_device: str = "/dev/video0",
     backend: str = "cpu",
 ) -> _ApplicationContext:
     hardware = profile_with_resolved_matrix(
@@ -116,7 +116,7 @@ def _build_context(
             selected_source,
             hardware,
             user,
-            camera_index=camera_index,
+            camera_device=camera_device,
             backend=backend,
         ),
     )
@@ -256,14 +256,14 @@ def create_app(
     profile_path: Path | None = None,
     user_profile_path: Path | None = None,
     source: Literal["synthetic", "facemesh"] | None = None,
-    camera_index: int = 0,
+    camera_device: str = "/dev/video0",
     backend: str = "cpu",
 ) -> FastAPI:
     context = _build_context(
         profile_path=profile_path,
         user_profile_path=user_profile_path,
         source=source,
-        camera_index=camera_index,
+        camera_device=camera_device,
         backend=backend,
     )
     application = FastAPI(

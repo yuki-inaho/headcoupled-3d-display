@@ -138,7 +138,7 @@ class FaceMeshTrackingProvider:
         hardware: HardwareProfile,
         user: UserProfile,
         *,
-        camera_index: int = 0,
+        camera_device: str = "/dev/video0",
         backend: str = "cpu",
         width: int = 1280,
         height: int = 720,
@@ -156,11 +156,12 @@ class FaceMeshTrackingProvider:
             ) from exc
 
         self._pipeline = FaceMeshPipeline.create(backend=Backend(backend))
-        self._capture = cv2.VideoCapture(camera_index)
+        source = int(camera_device) if camera_device.isdecimal() else camera_device
+        self._capture = cv2.VideoCapture(source)
         self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         if not self._capture.isOpened():
-            raise RuntimeError(f"unable to open camera index {camera_index}")
+            raise RuntimeError(f"unable to open camera device {camera_device!r}")
         self._estimator = HeadPoseEstimator(hardware, user)
         self._sequence = 0
         self._last_timestamp = time.perf_counter()

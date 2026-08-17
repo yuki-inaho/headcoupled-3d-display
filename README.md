@@ -157,8 +157,9 @@ PYTHONPATH=src .venv/bin/python -m headcoupled_display.cli profile-summary confi
 ### 3. FaceMesh実入力
 
 添付FaceMeshはPython 3.10、ONNX Runtime GPU 1.18、CUDA 11.8/cuDNN 8系の独立環境です。
-接続手順は `integrations/README.md` を参照してください。合成モードと異なり、実カメラ、
-モデル重み、GPU/CPU推論の試験は対象機器上で行う必要があります。
+実カメラのリアルタイム確認は、その環境の `just cam /dev/video0`（または本リポジトリから
+`just facemesh-live /dev/video0`）で行います。headcoupledのブラウザー表示は現在は合成追跡です。
+両環境間のIPCブリッジが未実装のため、`--source facemesh` を実機起動手順として案内しません。
 
 `facemesh_tracking reconstruct --pd <実測PD-mm>` が作る個人用 `shape.pcd`（478点）を使う場合は、
 利用者プロファイルにプロフィールファイルからの相対パスで指定します。PCDは個人の生体情報なので

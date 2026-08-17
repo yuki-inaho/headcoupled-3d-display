@@ -24,7 +24,9 @@ def serve(
     profile: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
     user_profile: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
     source: Annotated[Literal["synthetic", "facemesh"], typer.Option()] = "synthetic",
-    camera_index: Annotated[int, typer.Option(min=0)] = 0,
+    camera_device: Annotated[
+        str, typer.Option(help="V4L2 device path (use /dev/video0 on this machine)")
+    ] = "/dev/video0",
     backend: Annotated[Literal["cpu", "cuda", "tensorrt"], typer.Option()] = "cpu",
 ) -> None:
     """Serve the dashboard and real-time streams."""
@@ -33,7 +35,7 @@ def serve(
         profile_path=profile or default_hardware_profile_path(),
         user_profile_path=user_profile,
         source=source,
-        camera_index=camera_index,
+        camera_device=camera_device,
         backend=backend,
     )
     uvicorn.run(application, host=host, port=port, log_level="info")

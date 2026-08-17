@@ -3,6 +3,7 @@ set dotenv-load := true
 root := justfile_directory()
 profile := root / "config/hardware_profile.demo.json"
 python := root / ".venv/bin/python"
+facemesh_project := env_var_or_default("FACEMESH_TRACKING_PROJECT", root / "../facemesh_tracking")
 
 default:
     @just --list
@@ -19,6 +20,10 @@ setup-browsers:
 # Run the synthetic demo server.
 serve host="127.0.0.1" port="8000":
     PYTHONPATH={{root}}/src {{python}} -m headcoupled_display.cli serve --host {{host}} --port {{port}} --profile {{profile}} --source synthetic
+
+# Real USB-camera FaceMesh viewer. Use the V4L2 path rather than numeric index 0.
+facemesh-live device="/dev/video0":
+    cd {{facemesh_project}} && just cam {{device}}
 
 # Validate and summarize a hardware profile.
 profile-summary path=profile:

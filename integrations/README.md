@@ -41,27 +41,25 @@ uv run headcoupled import-tagcal \
 
 同梱場所: `components/facemesh_tracking/`
 
-元コンポーネントはPython 3.10限定です。GPU構成を維持したまま制御系を同じ仮想環境へ
-editable installする方法を推奨します。
+元コンポーネントはPython 3.10限定で、制御系はPython 3.11以上です。したがって、現在の
+`FaceMeshTrackingProvider` を同一プロセスで使う旧手順（`uv pip install -e ../..`）は成立しません。
+実カメラの確認はFaceMesh側の実行環境を使い、headcoupledのブラウザー表示は合成デモとして扱います。
+
+この機体では複数のV4L2デバイスがあり、数値インデックス0は失敗することがあるため、必ず
+`/dev/video0` をパスとして渡します。
 
 ```bash
-cd components/facemesh_tracking
-uv sync
-uv pip install -e ../..
-
-export FACEMESH_TRACKING_SOURCE="$PWD/src"
-uv run headcoupled serve \
-  --profile ../../config/hardware_profile.measured.json \
-  --user-profile ../../config/user_profile.demo.json \
-  --source facemesh \
-  --backend cuda \
-  --camera-index 0
+cd ~/Project/facemesh_tracking
+just cam /dev/video0
+# または headcoupled-3d-display から: just facemesh-live /dev/video0
 ```
 
-CPU確認:
+復元済みの個人モデルは次です。どちらも実寸mmで、`shape.ply`は外部メッシュビューア
+（CloudCompare/MeshLabなど）、`shape.pcd`はheadcoupledの個人眼位置プロファイル用です。
 
 ```bash
-uv run headcoupled serve --source facemesh --backend cpu
+~/Project/facemesh_tracking/recordings/me/shape.ply
+~/Project/facemesh_tracking/recordings/me/shape.pcd
 ```
 
 事前診断:
@@ -73,10 +71,9 @@ just doctor
 注意事項:
 
 - モデル重みは初回取得されます。
-- GPU版はCUDA 11.8/cuDNN 8系の仮想環境内ライブラリを使います。
+- GPU版はCUDA 11.8/cuDNN 8系のFaceMesh仮想環境内ライブラリを使います。
 - カメラの解像度、フォーカス、デジタルズームが内部較正時と一致している必要があります。
-- 汎用顔モデルの眼球中心は近似です。精度用途では利用者較正が必要です。
-- 実機・GPU試験は本生成環境では実施していません。
+- browser表示へ実ランドマークを渡すには、Python 3.10 FaceMeshプロセスからのIPCブリッジが別途必要です。
 
 ## 3. データ経路
 
