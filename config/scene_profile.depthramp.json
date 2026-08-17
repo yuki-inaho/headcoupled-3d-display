@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "scene_id": "bunny-stanford-depthramp",
+  "point_cloud_asset": "/static/assets/bunny_depthramp.pcd",
+  "anchor_display_m": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "longest_edge_m": 0.24,
+  "grid_spacing_m": 0.05,
+  "back_wall_z_m": -0.3,
+  "floor_y_m": -0.14,
+  "floor_near_z_m": 0.05,
+  "floor_far_z_m": -0.3,
+  "quality_metrics": {
+    "asset_point_count": 35947,
+    "asset_longest_edge_m": 0.155699,
+    "derived_uniform_scale": 1.541435719
+  },
+  "notes": [
+    "錯視の原因切り分け用の一時プロファイル。ジオメトリは本番と同一の本物のStanford Bunny(35947点)で、色だけを高さ(Y)ランプから奥行き(Z)ランプへ変えたもの。",
+    "手前=赤、中間=緑、最奥=濃紺。明度も手前ほど高くして二重の手掛かりにしている。輝度と奥行きの相関は0.938(Yランプ版は0.130)。",
+    "ジオメトリ・配置・スケールは default と完全に同一なので、見え方が変われば原因は奥行き手掛かりの有無であると確定できる。"
+  ],
+  "created_at": "2026-08-17T06:00:00+00:00"
+}
