@@ -70,7 +70,15 @@
 2. なければ `camera_mount` から構成。
 3. UI表示値は、最終的に選択された行列から逆算。
 
-## 4. TrackingState
+## 4. 利用者プロファイルの個人顔モデル
+
+`UserProfile.face_model_path` は `facemesh_tracking reconstruct` の478点ASCII `shape.pcd` を指す任意項目です。
+相対パスは利用者プロファイルJSONから解決します。PCDはmm/OpenCV座標（+X右、+Y下、+Z奥）であり、
+実行時にhead frameへ正規化してから12点SQPNPへ渡します。canonical faceとのKabsch照合で、proper
+rotation、8°以下の向き差、15 mm以下のRMSを満たさないファイルは拒否します。指定時の左右眼位置は
+虹彩中心ランドマーク468/473、両眼中点はその平均です。
+
+## 5. TrackingState
 
 ```json
 {
@@ -89,7 +97,7 @@
 }
 ```
 
-## 5. HTTP API
+## 6. HTTP API
 
 ### `GET /api/profile`
 
@@ -115,7 +123,7 @@
 - `/ws/pose`: `{type: "tracking", payload: TrackingState}`
 - `/ws/camera`: JPEG bytes
 
-## 6. 較正品質基準
+## 7. 較正品質基準
 
 人工回帰試験の受入基準:
 
@@ -134,7 +142,7 @@
 - 前後移動時スケールドリフト
 - bunny.pcdの窓効果を見た目で検証した結果
 
-## 7. 異常系
+## 8. 異常系
 
 - 眼位置 `z <= 0`: 投影拒否。
 - 変換回転が直交でない: プロファイル拒否。
@@ -144,7 +152,7 @@
 - WebSocketクライアント遅延: 古いフレームを蓄積せず最新値へ追従。
 - WebGL2不可: Canvas2Dへ切替。
 
-## 8. 実機化時の追加作業
+## 9. 実機化時の追加作業
 
 - 対象カメラ解像度・フォーカス・ズーム固定。
 - 対象ディスプレイの有効表示寸法を定規で確認。

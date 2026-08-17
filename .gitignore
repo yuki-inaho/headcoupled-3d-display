@@ -17,6 +17,11 @@ artifacts/
 # Measured hardware profiles are machine specific.
 config/hardware_profile.measured.json
 
+# Personal face models and the profile paths that reference them are biometric data.
+# Keep the checked-in demo profile only; store real shape.pcd files outside this repository.
+config/user_profile.measured.json
+config/private/
+
 # Model weights are fetched on first run by the FaceMesh component.
 models/
 

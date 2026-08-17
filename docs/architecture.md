@@ -103,17 +103,18 @@ total_tilt = acos(dot(z_C^S, display_normal))
 BGR frame
   → YOLOv8-Face
   → FaceMesh 478 points
-  → stable six landmark subset
-  → solvePnPRansac + solvePnPRefineLM
+  → bone-backed 12 landmark subset
+  → SOLVEPNP_SQPNP + cheirality (tvec.z > 0)
   → T_C_H
-  → user-profile eye centers in H
+  → reconstructed shape.pcd iris centres (468/473), or profile fallback
   → left/right/cyclopean eye in C
   → T_S_C
   → eye positions in S
 ```
 
-標準6点は鼻先、顎、左右目尻、左右口角です。汎用顔モデルは初期値であり、製品精度には
-利用者較正済み眼球中心・顔尺度が必要です。
+標準点は鼻・両眼角・口角・顎など表情で動きにくい12点です。個人 `shape.pcd` が指定されると、
+起動時にcanonical head frameとのKabsch照合を行い、PCDのOpenCV/mm座標を内部head frameへ
+正規化します。照合失敗（反射、軸違い、単位違い）はカメラ開始前に拒否します。
 
 ## 6. 非対称投影
 
@@ -184,6 +185,7 @@ r = (I - d d^T) (q_C - e_C)
 
 - 瞳孔間距離
 - 頭部座標内の左右眼球中心・両眼中点
+- 任意の個人用478点 `shape.pcd` パス（指定時は虹彩中心を眼位置に使う）
 - 頭部正面軸補正
 - 個人較正品質
 

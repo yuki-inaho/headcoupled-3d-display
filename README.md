@@ -26,7 +26,7 @@
 camera / synthetic source
         │
         ├── FaceMesh 478点（任意、添付コンポーネント）
-        │       └── solvePnP → 頭部姿勢 → 左右眼球中心 → 両眼中点
+        │       └── 12点 SQPNP → 虹彩中心 → 両眼中点
         │
         └── TrackingState（画面座標系）
                 ├── /ws/pose      JSON
@@ -157,6 +157,18 @@ PYTHONPATH=src .venv/bin/python -m headcoupled_display.cli profile-summary confi
 添付FaceMeshはPython 3.10、ONNX Runtime GPU 1.18、CUDA 11.8/cuDNN 8系の独立環境です。
 接続手順は `integrations/README.md` を参照してください。合成モードと異なり、実カメラ、
 モデル重み、GPU/CPU推論の試験は対象機器上で行う必要があります。
+
+`facemesh_tracking reconstruct --pd <実測PD-mm>` が作る個人用 `shape.pcd`（478点）を使う場合は、
+利用者プロファイルにプロフィールファイルからの相対パスで指定します。PCDは個人の生体情報なので
+リポジトリへ追加しません。
+
+```json
+{"face_model_path": "../private-recordings/me/shape.pcd"}
+```
+
+起動時に、PCDのmm/OpenCV座標系とcanonical head座標系をKabsch照合します。照合を通過すると
+12点 `SOLVEPNP_SQPNP` と正の深度（cheirality）判定を使用し、左右眼位置はプロファイルの一般値
+ではなくランドマーク 468/473 の虹彩中心から求めます。
 
 ## API
 

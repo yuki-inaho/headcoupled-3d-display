@@ -131,13 +131,13 @@ capture_gui.py   キーフレーム撮影GUI
 reconstruct.py   GTSAM バンドル調整・左右対称化・PD実寸化
 ```
 
-このため `src/headcoupled_display/tracking.py` の `HeadPoseEstimator` は、
-一般顔6点モデルを内部に持つ**独自実装**になっています。既知の相違点は次のとおりです。
+このスナップショットの不足を補うため、後続の修正で
+`src/headcoupled_display/tracking.py` に次を実装しました。
 
-- `cv2.SOLVEPNP_ITERATIVE` を使用。本家 `facemesh_tracking/head_pose.py` では
-  鏡像解（`tvec.z < 0`、face が camera の背後）へ収束する不具合が実測で確認され、
-  `SOLVEPNP_SQPNP` + cheirality 判定へ変更済み。ここには反映されていない。
-- 顔モデルが一般値のハードコードであり、`reconstruct.py` が出力する
-  個人固有の実寸メッシュ（`shape.pcd` / `shape.ply`）を利用していない。
+- 6点 `SOLVEPNP_ITERATIVE` を骨格に近い12点 `SOLVEPNP_SQPNP` へ置換し、
+  `tvec.z > 0` のcheiralityを必須化。鏡像解を成功扱いしない。
+- `UserProfile.face_model_path` で `reconstruct.py` 出力の478点 `shape.pcd` を指定可能にし、
+  canonicalとのKabsch照合後に虹彩中心（468/473）を左右眼位置として使う。
 
-実機接続時は、この2点が精度の主要因になります。
+PCDはOpenCV/mm座標で保存されることを実データで確認したため、head frameへ正規化してから
+PnPと眼位置変換を行う。一般値は個人PCD未指定時だけのフォールバックである。
