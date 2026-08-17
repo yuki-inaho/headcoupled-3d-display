@@ -8,9 +8,10 @@
   <title>Head-Coupled 3D Display</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
-<body>
+<body data-view-mode="verification">
   <canvas id="gl-canvas" aria-label="bunny.pcd head-coupled 3D view"></canvas>
   <div class="screen-frame" aria-hidden="true"></div>
+  <div id="aspect-warning" class="aspect-warning" role="alert" aria-live="assertive" hidden></div>
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark">HC</span>
@@ -21,6 +22,13 @@
     </div>
     <div class="topbar-actions">
       <span id="tracking-status" class="status-chip" data-kind="pending">初期化中</span>
+      <button
+        id="mode-toggle-button"
+        class="secondary-button"
+        type="button"
+        aria-pressed="false"
+        aria-label="没入モードと検証モードを切り替え"
+      >没入モードへ</button>
       <button id="fullscreen-button" class="secondary-button" type="button">全画面</button>
     </div>
   </header>
@@ -81,6 +89,22 @@
         <strong id="profile-id">--</strong>
         <small id="profile-provenance">--</small>
       </div>
+    </section>
+
+    <section id="verification-hud" class="panel verification-hud" aria-labelledby="verification-heading">
+      <div class="panel-heading">
+        <div>
+          <span class="eyebrow">SCENE VERIFICATION</span>
+          <h2 id="verification-heading">検証モード数値</h2>
+        </div>
+      </div>
+      <dl class="metric-list">
+        <div><dt>画面面アンカー z</dt><dd id="hud-anchor-z">--</dd></div>
+        <div><dt>点群AABB中心</dt><dd id="hud-aabb-center">--</dd></div>
+        <div><dt>グリッド間隔</dt><dd id="hud-grid-spacing">--</dd></div>
+        <div><dt>後壁 depth (z)</dt><dd id="hud-back-wall-depth">--</dd></div>
+        <div><dt>プレビュー解像度</dt><dd id="hud-preview-resolution">--</dd></div>
+      </dl>
     </section>
 
     <section class="panel calibration-panel" aria-labelledby="calibration-heading">

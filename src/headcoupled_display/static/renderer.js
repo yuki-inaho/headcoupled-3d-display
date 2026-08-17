@@ -1,5 +1,69 @@
 import { loadAsciiPcd } from "./pcd.js";
 
+// Rolling window size for the receive-to-draw / CPU-draw timing ring buffer. This is a
+// debug window, not an unbounded log, so a fixed small size is intentional.
+const TIMING_RING_SIZE = 240;
+
+// A few millimetres of explicit separation between the back-wall grid and the backdrop
+// quad behind it. Both live at the scene profile's back_wall_z_m; without this offset
+// they would occupy the identical depth and flicker (z-fighting). This is the
+// "separate the depths on purpose" fix the workdoc asks for, not a disabled depth test.
+const BACK_WALL_GRID_Z_OFFSET_M = 0.002;
+
+// The backdrop quad is sized larger than the physical display so head movement within
+// the expected range never reveals bare canvas past its edges. This is a generous
+// heuristic, not a tight fit computed from the frustum; widen it if that ever happens.
+const BACKDROP_MARGIN_FACTOR = 2.5;
+
+const BACKDROP_COLOR = new Float32Array([0.04, 0.06, 0.09, 1.0]);
+const GRID_COLOR = new Float32Array([0.2, 0.32, 0.42, 1.0]);
+// Matches the --accent CSS custom property (#57d6b5) so the verification overlay reads
+// as "UI", not as scene content.
+const SCREEN_FRAME_COLOR = new Float32Array([0.341, 0.839, 0.71, 1.0]);
+
+const POINT_VERTEX_SHADER = `#version 300 es
+precision highp float;
+in vec3 a_position;
+in vec3 a_color;
+uniform mat4 u_mvp;
+uniform float u_point_size;
+out vec3 v_color;
+void main() {
+  gl_Position = u_mvp * vec4(a_position, 1.0);
+  gl_PointSize = u_point_size;
+  v_color = a_color;
+}`;
+
+const POINT_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 out_color;
+void main() {
+  vec2 centered = gl_PointCoord - vec2(0.5);
+  if (dot(centered, centered) > 0.25) discard;
+  float edge = smoothstep(0.25, 0.14, dot(centered, centered));
+  out_color = vec4(v_color * (0.78 + 0.22 * edge), 1.0);
+}`;
+
+// Shared by every reference-geometry pass (backdrop, back-wall grid, floor grid, screen
+// frame): flat-shaded lines/triangles at a uniform color, nothing fancier is needed for
+// depth cues.
+const GRID_VERTEX_SHADER = `#version 300 es
+precision highp float;
+in vec3 a_position;
+uniform mat4 u_mvp;
+void main() {
+  gl_Position = u_mvp * vec4(a_position, 1.0);
+}`;
+
+const GRID_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+uniform vec4 u_color;
+out vec4 out_color;
+void main() {
+  out_color = u_color;
+}`;
+
 function compileShader(gl, type, source) {
   const shader = gl.createShader(type);
   gl.shaderSource(shader, source);
@@ -58,11 +122,11 @@ function frustumMatrix(left, right, bottom, top, near, far) {
 }
 
 function projectionForDisplay(display, eye, near = 0.05, far = 8.0) {
-  const distance = Math.max(eye[2], 0.20);
-  const left = near * (-display.width_m / 2 - eye[0]) / distance;
-  const right = near * (display.width_m / 2 - eye[0]) / distance;
-  const bottom = near * (-display.height_m / 2 - eye[1]) / distance;
-  const top = near * (display.height_m / 2 - eye[1]) / distance;
+  const distance = Math.max(eye[2], 0.2);
+  const left = (near * (-display.width_m / 2 - eye[0])) / distance;
+  const right = (near * (display.width_m / 2 - eye[0])) / distance;
+  const bottom = (near * (-display.height_m / 2 - eye[1])) / distance;
+  const top = (near * (display.height_m / 2 - eye[1])) / distance;
   return frustumMatrix(left, right, bottom, top, near, far);
 }
 
@@ -111,6 +175,68 @@ function transformPoint(matrix, point) {
   );
 }
 
+/**
+ * A line-list grid of lines spaced `spacing` apart on a plane where one axis is held
+ * fixed. `axes` lists [uAxisIndex, vAxisIndex, fixedAxisIndex] into (x, y, z); `uRange`
+ * and `vRange` are the [min, max] extents along the two free axes.
+ */
+function buildGridLines(axes, uRange, vRange, fixedValue, spacing) {
+  if (!(spacing > 0)) throw new Error("Grid spacing must be positive");
+  const [uAxis, vAxis, fixedAxis] = axes;
+  const [uMin, uMax] = uRange;
+  const [vMin, vMax] = vRange;
+  const vertices = [];
+  const pushVertex = (u, v) => {
+    const point = [0, 0, 0];
+    point[uAxis] = u;
+    point[vAxis] = v;
+    point[fixedAxis] = fixedValue;
+    vertices.push(point[0], point[1], point[2]);
+  };
+  for (let u = uMin; u <= uMax + 1e-9; u += spacing) {
+    pushVertex(u, vMin);
+    pushVertex(u, vMax);
+  }
+  for (let v = vMin; v <= vMax + 1e-9; v += spacing) {
+    pushVertex(uMin, v);
+    pushVertex(uMax, v);
+  }
+  return new Float32Array(vertices);
+}
+
+/** A single quad (triangle strip, 4 vertices) at a fixed z, spanning [xMin,xMax]x[yMin,yMax]. */
+function buildQuadStrip(xMin, xMax, yMin, yMax, z) {
+  return new Float32Array([xMin, yMin, z, xMax, yMin, z, xMin, yMax, z, xMax, yMax, z]);
+}
+
+/**
+ * Perimeter frame of the active display area at z=0 plus inward tick marks every
+ * `spacing`, as one gl.LINES vertex list. This is the "screen plane basis" HUD overlay,
+ * not physical scene content -- see PointCloudRenderer.drawScreenFrame.
+ */
+function buildScreenFrameGeometry(display, spacing) {
+  if (!(spacing > 0)) throw new Error("Grid spacing must be positive");
+  const halfW = display.width_m / 2;
+  const halfH = display.height_m / 2;
+  const tick = Math.min(spacing, halfW, halfH) * 0.18;
+  const z = 0;
+  const vertices = [];
+  const pushSegment = (x1, y1, x2, y2) => vertices.push(x1, y1, z, x2, y2, z);
+  pushSegment(-halfW, -halfH, halfW, -halfH);
+  pushSegment(halfW, -halfH, halfW, halfH);
+  pushSegment(halfW, halfH, -halfW, halfH);
+  pushSegment(-halfW, halfH, -halfW, -halfH);
+  for (let x = -halfW; x <= halfW + 1e-9; x += spacing) {
+    pushSegment(x, halfH, x, halfH - tick);
+    pushSegment(x, -halfH, x, -halfH + tick);
+  }
+  for (let y = -halfH; y <= halfH + 1e-9; y += spacing) {
+    pushSegment(-halfW, y, -halfW + tick, y);
+    pushSegment(halfW, y, halfW - tick, y);
+  }
+  return new Float32Array(vertices);
+}
+
 export class PointCloudRenderer {
   constructor(canvas, display, scene) {
     if (!scene || !Array.isArray(scene.anchor_display_m) || !(scene.longest_edge_m > 0)) {
@@ -127,6 +253,29 @@ export class PointCloudRenderer {
     this.positions = null;
     this.colors = null;
     this.running = true;
+    // "verification" shows the screen-plane HUD overlay; "immersive" hides it. Kept in
+    // sync with document.body.dataset.viewMode by app.js calling setViewMode().
+    this.viewMode = "verification";
+    this.staticGeometry = null;
+    this.staticUploadCount = 0;
+
+    // Dirty-draw scheduling state (steps 19-20): at most one requestAnimationFrame may
+    // be pending at any time -- see scheduleDraw(). Pose updates, resize and mode
+    // changes are the only triggers; nothing here runs an unconditional draw loop.
+    this.rafHandle = null;
+    this.pendingRafCount = 0;
+    this.drawCount = 0;
+    this.latestSequence = null;
+    this.lastRenderedSequence = null;
+    this.sequenceReversalCount = 0;
+    this.latestReceivedAtMs = null;
+
+    // Rolling receive-to-draw / CPU-draw timing samples, timestamped with
+    // performance.timeOrigin + performance.now() so they are directly comparable to
+    // server-side Unix-ns timestamps.
+    this.timingRing = new Array(TIMING_RING_SIZE).fill(null);
+    this.timingRingIndex = 0;
+
     this.gl = canvas.getContext("webgl2", {
       alpha: false,
       antialias: true,
@@ -140,40 +289,24 @@ export class PointCloudRenderer {
       this.context2d = canvas.getContext("2d", { alpha: false });
       if (!this.context2d) throw new Error("Neither WebGL2 nor Canvas2D is available");
       this.mode = "Canvas2D fallback";
+      this.gpuTimingAvailable = false;
     }
+
+    this.canvas.dataset.staticUploadCount = "0";
+    this.canvas.dataset.drawCount = "0";
+    this.canvas.dataset.pendingRafCount = "0";
+    this.canvas.dataset.sequenceReversalCount = "0";
+    this.canvas.dataset.lastRenderedSequence = "-1";
+    this.canvas.dataset.gpuTimingAvailable = String(this.gpuTimingAvailable);
+
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(canvas);
-    this.resize();
-    requestAnimationFrame(() => this.draw());
+    this.resize(); // Also schedules the first draw; see resize() below.
   }
 
   initializeWebGl() {
     const gl = this.gl;
-    this.program = createProgram(
-      gl,
-      `#version 300 es
-      precision highp float;
-      in vec3 a_position;
-      in vec3 a_color;
-      uniform mat4 u_mvp;
-      uniform float u_point_size;
-      out vec3 v_color;
-      void main() {
-        gl_Position = u_mvp * vec4(a_position, 1.0);
-        gl_PointSize = u_point_size;
-        v_color = a_color;
-      }`,
-      `#version 300 es
-      precision highp float;
-      in vec3 v_color;
-      out vec4 out_color;
-      void main() {
-        vec2 centered = gl_PointCoord - vec2(0.5);
-        if (dot(centered, centered) > 0.25) discard;
-        float edge = smoothstep(0.25, 0.14, dot(centered, centered));
-        out_color = vec4(v_color * (0.78 + 0.22 * edge), 1.0);
-      }`,
-    );
+    this.program = createProgram(gl, POINT_VERTEX_SHADER, POINT_FRAGMENT_SHADER);
     this.positionLocation = gl.getAttribLocation(this.program, "a_position");
     this.colorLocation = gl.getAttribLocation(this.program, "a_color");
     this.mvpLocation = gl.getUniformLocation(this.program, "u_mvp");
@@ -181,6 +314,85 @@ export class PointCloudRenderer {
     this.vao = gl.createVertexArray();
     this.positionBuffer = gl.createBuffer();
     this.colorBuffer = gl.createBuffer();
+
+    this.gridProgram = createProgram(gl, GRID_VERTEX_SHADER, GRID_FRAGMENT_SHADER);
+    this.gridPositionLocation = gl.getAttribLocation(this.gridProgram, "a_position");
+    this.gridMvpLocation = gl.getUniformLocation(this.gridProgram, "u_mvp");
+    this.gridColorLocation = gl.getUniformLocation(this.gridProgram, "u_color");
+
+    // Detection only. Using this extension correctly needs an async, multi-frame
+    // query/readback protocol, which is out of scope for this step; what is promised
+    // is that CPU wall time is never relabeled as GPU time when the extension is
+    // unavailable (see draw()/recordTiming()).
+    this.timerExtension = gl.getExtension("EXT_disjoint_timer_query_webgl2");
+    this.gpuTimingAvailable = this.timerExtension !== null;
+  }
+
+  /**
+   * Build (or rebuild, reusing existing GPU buffers) the static reference geometry:
+   * back-wall backdrop + grid, floor grid, and the verification screen frame. Called
+   * once from load() -- i.e. at load time and whenever a new scene is loaded -- never
+   * per frame. See draw()/drawStaticWorldGeometry() for how these are drawn.
+   */
+  buildStaticGeometry() {
+    const gl = this.gl;
+    if (!gl) return; // Canvas2D fallback has no reference geometry; out of scope here.
+    const halfW = this.display.width_m / 2;
+    const halfH = this.display.height_m / 2;
+    const spacing = this.scene.grid_spacing_m;
+
+    const backdropVertices = buildQuadStrip(
+      -halfW * BACKDROP_MARGIN_FACTOR,
+      halfW * BACKDROP_MARGIN_FACTOR,
+      this.scene.floor_y_m,
+      halfH * BACKDROP_MARGIN_FACTOR,
+      this.scene.back_wall_z_m,
+    );
+    const backWallGridVertices = buildGridLines(
+      [0, 1, 2],
+      [-halfW, halfW],
+      [-halfH, halfH],
+      this.scene.back_wall_z_m + BACK_WALL_GRID_Z_OFFSET_M,
+      spacing,
+    );
+    const floorGridVertices = buildGridLines(
+      [0, 2, 1],
+      [-halfW, halfW],
+      [this.scene.floor_far_z_m, this.scene.floor_near_z_m],
+      this.scene.floor_y_m,
+      spacing,
+    );
+    const screenFrameVertices = buildScreenFrameGeometry(this.display, spacing);
+
+    const previous = this.staticGeometry;
+    this.staticGeometry = {
+      backdrop: this.uploadStaticBuffer(previous?.backdrop?.buffer, backdropVertices, 4),
+      backWallGrid: this.uploadStaticBuffer(
+        previous?.backWallGrid?.buffer,
+        backWallGridVertices,
+        backWallGridVertices.length / 3,
+      ),
+      floorGrid: this.uploadStaticBuffer(
+        previous?.floorGrid?.buffer,
+        floorGridVertices,
+        floorGridVertices.length / 3,
+      ),
+      screenFrame: this.uploadStaticBuffer(
+        previous?.screenFrame?.buffer,
+        screenFrameVertices,
+        screenFrameVertices.length / 3,
+      ),
+    };
+    this.staticUploadCount += 1;
+    this.canvas.dataset.staticUploadCount = String(this.staticUploadCount);
+  }
+
+  uploadStaticBuffer(existingBuffer, vertices, vertexCount) {
+    const gl = this.gl;
+    const buffer = existingBuffer ?? gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+    return { buffer, vertexCount };
   }
 
   async load(url) {
@@ -204,6 +416,7 @@ export class PointCloudRenderer {
       gl.enableVertexAttribArray(this.colorLocation);
       gl.vertexAttribPointer(this.colorLocation, 3, gl.FLOAT, false, 0, 0);
       gl.bindVertexArray(null);
+      this.buildStaticGeometry();
     }
     // Exposed so end-to-end tests can assert the placement numerically instead of
     // inferring it from a screenshot.
@@ -217,12 +430,36 @@ export class PointCloudRenderer {
     this.canvas.dataset.modelCenterDisplayM = JSON.stringify(placedCenter);
     this.canvas.dataset.modelMinDisplayM = JSON.stringify(placedMin);
     this.canvas.dataset.modelMaxDisplayM = JSON.stringify(placedMax);
+    this.scheduleDraw();
     return { pointCount: cloud.pointCount, mode: this.mode };
   }
 
-  setEye(eye) {
+  /**
+   * Update the eye position, optionally tagged with the pose's server-assigned
+   * sequence number. A message whose sequence is older than the latest one already
+   * applied is dropped rather than applied: this is what guarantees the renderer never
+   * draws an older pose after a newer one has already been drawn, independent of
+   * whatever order messages happen to arrive in. sequenceReversalCount makes that
+   * (otherwise silent) drop observable.
+   */
+  setEye(eye, sequence) {
     if (!Array.isArray(eye) || eye.length !== 3 || eye.some((value) => !Number.isFinite(value))) return;
+    if (Number.isFinite(sequence) && this.latestSequence !== null && sequence < this.latestSequence) {
+      this.sequenceReversalCount += 1;
+      this.canvas.dataset.sequenceReversalCount = String(this.sequenceReversalCount);
+      return;
+    }
     this.eye = [...eye];
+    if (Number.isFinite(sequence)) this.latestSequence = sequence;
+    this.latestReceivedAtMs = performance.timeOrigin + performance.now();
+    this.scheduleDraw();
+  }
+
+  setViewMode(mode) {
+    if (mode !== "immersive" && mode !== "verification") return;
+    if (this.viewMode === mode) return;
+    this.viewMode = mode;
+    this.scheduleDraw();
   }
 
   resize() {
@@ -234,23 +471,106 @@ export class PointCloudRenderer {
       this.canvas.height = height;
     }
     if (this.gl) this.gl.viewport(0, 0, width, height);
+    this.scheduleDraw();
+  }
+
+  /**
+   * Ensure exactly one requestAnimationFrame is pending. Called only from the three
+   * explicit triggers (pose update, resize, mode change) plus load() -- never from
+   * inside draw() itself, which is what breaks the old unconditional redraw loop. If a
+   * frame is already pending, it will pick up whatever is the latest state (eye,
+   * sequence, viewMode) by the time it actually runs, so calling this again before
+   * that happens is a no-op.
+   */
+  scheduleDraw() {
+    if (this.rafHandle !== null) return;
+    this.pendingRafCount = 1;
+    this.canvas.dataset.pendingRafCount = "1";
+    this.rafHandle = requestAnimationFrame(() => this.onAnimationFrame());
+  }
+
+  onAnimationFrame() {
+    this.rafHandle = null;
+    this.pendingRafCount = 0;
+    this.canvas.dataset.pendingRafCount = "0";
+    this.draw();
+  }
+
+  drawGridBuffer(entry, mvp, color, mode) {
+    const gl = this.gl;
+    gl.useProgram(this.gridProgram);
+    gl.bindBuffer(gl.ARRAY_BUFFER, entry.buffer);
+    gl.enableVertexAttribArray(this.gridPositionLocation);
+    gl.vertexAttribPointer(this.gridPositionLocation, 3, gl.FLOAT, false, 0, 0);
+    gl.uniformMatrix4fv(this.gridMvpLocation, false, mvp);
+    gl.uniform4fv(this.gridColorLocation, color);
+    gl.drawArrays(mode, 0, entry.vertexCount);
+  }
+
+  /**
+   * World-space depth cues: backdrop, back-wall grid, floor grid. All three share the
+   * point cloud's view/projection and are drawn with depth testing on (see drawWebGl),
+   * so they occlude and are occluded by the point cloud correctly as the eye moves.
+   */
+  drawStaticWorldGeometry(viewProjection) {
+    const gl = this.gl;
+    const geometry = this.staticGeometry;
+    // Backdrop: an actual plane pushed through the same view/projection as everything
+    // else, not just the canvas clear color -- so it participates in parallax instead
+    // of looking pasted onto the screen. It is the single furthest surface in the
+    // scene, so there is nothing behind it to conflict with.
+    this.drawGridBuffer(geometry.backdrop, viewProjection, BACKDROP_COLOR, gl.TRIANGLE_STRIP);
+    // Back-wall grid: offset BACK_WALL_GRID_Z_OFFSET_M in front of the coincident
+    // backdrop plane (see the constant's doc comment) -- an explicit depth separation,
+    // not a disabled depth test.
+    this.drawGridBuffer(geometry.backWallGrid, viewProjection, GRID_COLOR, gl.LINES);
+    // Floor grid: a different plane (y=floor_y_m) entirely, so it cannot z-fight with
+    // either of the two above.
+    this.drawGridBuffer(geometry.floorGrid, viewProjection, GRID_COLOR, gl.LINES);
+  }
+
+  drawScreenFrame(viewProjection) {
+    this.drawGridBuffer(this.staticGeometry.screenFrame, viewProjection, SCREEN_FRAME_COLOR, this.gl.LINES);
   }
 
   drawWebGl() {
     const gl = this.gl;
     gl.clearColor(0.025, 0.035, 0.052, 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    gl.enable(gl.DEPTH_TEST);
     if (this.pointCount === 0 || !this.model) return;
     const projection = projectionForDisplay(this.display, this.eye);
     const view = translationMatrix(-this.eye[0], -this.eye[1], -this.eye[2]);
-    const mvp = multiplyMat4(projection, multiplyMat4(view, this.model));
+    const viewProjection = multiplyMat4(projection, view);
+    const mvp = multiplyMat4(viewProjection, this.model);
+
+    // World pass: backdrop/wall/floor and the point cloud all share this
+    // view/projection with depth testing on. The depth buffer -- not draw order --
+    // is what keeps overlaps correct; drawing back-to-front here is only for
+    // readability and a small amount of overdraw saved.
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthMask(true);
+    if (this.staticGeometry) this.drawStaticWorldGeometry(viewProjection);
+
     gl.useProgram(this.program);
     gl.uniformMatrix4fv(this.mvpLocation, false, mvp);
     gl.uniform1f(this.pointSizeLocation, Math.min(window.devicePixelRatio || 1, 2) * 2.15);
     gl.bindVertexArray(this.vao);
     gl.drawArrays(gl.POINTS, 0, this.pointCount);
     gl.bindVertexArray(null);
+
+    // Screen-plane overlay: z=0 is a verification-mode HUD reference, not physical
+    // scene content, so it must win against both the wall behind it (z<0) and the
+    // point cloud (which straddles z=0). Depth testing is switched off only for this
+    // last pass, and depth writes are switched off too so a stray write here cannot
+    // corrupt next frame's world pass (each frame clears the depth buffer anyway, but
+    // this keeps the intent explicit rather than relying on that).
+    if (this.viewMode === "verification" && this.staticGeometry) {
+      gl.disable(gl.DEPTH_TEST);
+      gl.depthMask(false);
+      this.drawScreenFrame(viewProjection);
+      gl.depthMask(true);
+      gl.enable(gl.DEPTH_TEST);
+    }
   }
 
   drawCanvas2d() {
@@ -288,15 +608,33 @@ export class PointCloudRenderer {
     }
   }
 
+  recordTiming(drawStartMs, drawEndMs) {
+    const cpuDrawMs = drawEndMs - drawStartMs;
+    const receiveToDrawMs =
+      this.latestReceivedAtMs === null ? null : drawStartMs - this.latestReceivedAtMs;
+    this.timingRing[this.timingRingIndex] = { drawStartMs, cpuDrawMs, receiveToDrawMs };
+    this.timingRingIndex = (this.timingRingIndex + 1) % this.timingRing.length;
+  }
+
   draw() {
     if (!this.running) return;
+    const drawStartMs = performance.timeOrigin + performance.now();
     if (this.gl) this.drawWebGl();
     else this.drawCanvas2d();
-    requestAnimationFrame(() => this.draw());
+    const drawEndMs = performance.timeOrigin + performance.now();
+    this.drawCount += 1;
+    if (this.latestSequence !== null) this.lastRenderedSequence = this.latestSequence;
+    this.recordTiming(drawStartMs, drawEndMs);
+    this.canvas.dataset.drawCount = String(this.drawCount);
+    this.canvas.dataset.lastRenderedSequence = String(this.lastRenderedSequence ?? -1);
   }
 
   dispose() {
     this.running = false;
     this.resizeObserver.disconnect();
+    if (this.rafHandle !== null) {
+      cancelAnimationFrame(this.rafHandle);
+      this.rafHandle = null;
+    }
   }
 }
