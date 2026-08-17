@@ -127,7 +127,7 @@ CUDA明示指定が**CPU**へ暗黙fallbackした場合は、速度に関わら�
 ### 4.5 依存の隔離
 
 比較対象となる候補依存（pyzmq、grpcio等）は製品runtimeのlock（`requirements.lock`）へ入れない。
-比較・計測専用の `requirements.transport-bench.in` / `requirements.transport-bench.lock` による
+比較・計測専用の `requirements/transport-bench.in` / `requirements/transport-bench.lock` による
 隔離されたuv環境にのみ導入し、採用が決まった単一方式のみを製品runtimeへ追加する（手順32・39参照）。
 
 ## 5. 採用結果（未計測）

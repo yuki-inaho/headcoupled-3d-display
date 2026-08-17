@@ -4,7 +4,7 @@ Candidates under comparison: ``json_http`` (today's approach: JSON + base64 JPEG
 synchronous HTTP POST), ``binary_http`` (same HTTP transport, but control uses
 ``headcoupled_display.protocol``'s fixed binary packet and preview is raw JPEG bytes),
 ``zeromq`` (pyzmq), and ``grpc`` (grpcio). pyzmq/grpcio are NOT product runtime
-dependencies -- see requirements.transport-bench.in. This module is importable (for its
+dependencies -- see requirements/transport-bench.in. This module is importable (for its
 pydantic report schema and the pure ``evaluate_*`` judgement functions) without either
 package installed: both are imported lazily, only inside the specific candidate's
 producer/consumer functions, so ``tests/unit/test_transport_benchmark.py`` runs green

@@ -44,7 +44,7 @@
 | 環境差分 | `docs/local_setup_notes.md` | 配布物の主張と実際の差分、この機体で行った修正 |
 | 入力の出自 | `docs/input_manifest.md` | 外部入力の所在・ライセンス・検証状況 |
 | 配布物レビュー | `docs/source_review.md` | 受領時のコードレビュー結果 |
-| 第三者著作物 | `THIRD_PARTY_NOTICES.md` | Stanford Bunnyの帰属と利用条件（**商用利用は要許諾**） |
+| 第三者著作物 | `docs/input_manifest.md` | Stanford Bunnyの出自と利用条件の原文（**商用利用は要許諾**） |
 
 ---
 
