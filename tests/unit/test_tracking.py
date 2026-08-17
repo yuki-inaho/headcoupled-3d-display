@@ -132,3 +132,11 @@ def test_face_model_rejects_unflipped_head_coordinates(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="canonical metric frame"):
         load_personal_face_model(pcd)
+
+
+def test_face_model_points_are_immutable_after_runtime_type_validation() -> None:
+    model = canonical_face_model()
+
+    assert not model.points_head_m.flags.writeable
+    with pytest.raises(ValueError, match="read-only"):
+        model.points_head_m[0, 0] = 1.0

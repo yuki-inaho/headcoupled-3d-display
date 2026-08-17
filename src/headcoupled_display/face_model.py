@@ -13,6 +13,10 @@ from importlib import resources
 from pathlib import Path
 
 import numpy as np
+from beartype import beartype
+from jaxtyping import Float64, jaxtyped
+
+MetricPoints = Float64[np.ndarray, "points 3"]
 
 CANONICAL_LANDMARK_COUNT = 468
 LANDMARK_COUNT_WITH_IRISES = 478
@@ -31,9 +35,14 @@ class FaceModelValidationError(ValueError):
 class FaceModel:
     """A 468/478-point metric face in the controller's head coordinate frame."""
 
-    points_head_m: np.ndarray
+    points_head_m: MetricPoints
     source: str
     is_personal: bool
+
+    def __post_init__(self) -> None:
+        """Freeze the startup-loaded metric mesh before it enters the tracking loop."""
+
+        object.__setattr__(self, "points_head_m", _freeze_metric_points(self.points_head_m))
 
     @property
     def pnp_points_opencv_m(self) -> np.ndarray:
@@ -59,9 +68,18 @@ def canonical_face_model() -> FaceModel:
     return FaceModel(points_head_m=points_cm / 100.0, source="canonical", is_personal=False)
 
 
-def _read_ascii_pcd(path: Path) -> np.ndarray:
+@jaxtyped(typechecker=beartype)
+def _freeze_metric_points(points: MetricPoints) -> MetricPoints:
+    """Return a contiguous immutable float64 point cloud, checked only at load time."""
+
+    frozen = np.array(points, dtype=np.float64, copy=True, order="C")
+    frozen.setflags(write=False)
+    return frozen
+
+
+def _read_pcd_lines(path: Path) -> list[str]:
     try:
-        lines = path.read_text(encoding="ascii").splitlines()
+        return path.read_text(encoding="ascii").splitlines()
     except OSError as exc:
         raise FaceModelValidationError(f"cannot read face model {path}: {exc}") from exc
     except UnicodeDecodeError as exc:
@@ -69,8 +87,9 @@ def _read_ascii_pcd(path: Path) -> np.ndarray:
             f"face model {path} must be an ASCII PCD written by facemesh_tracking"
         ) from exc
 
+
+def _parse_pcd_header(lines: list[str]) -> tuple[dict[str, str], int]:
     header: dict[str, str] = {}
-    data_line = None
     for index, line in enumerate(lines):
         fields = line.split(maxsplit=1)
         if not fields or fields[0].startswith("#"):
@@ -79,24 +98,31 @@ def _read_ascii_pcd(path: Path) -> np.ndarray:
         value = fields[1] if len(fields) == 2 else ""
         header[key] = value
         if key == "DATA":
-            data_line = index
-            break
-    if data_line is None or header.get("DATA", "").lower() != "ascii":
+            return header, index
+    raise FaceModelValidationError("face model is missing a PCD DATA section")
+
+
+def _validate_pcd_header(header: dict[str, str]) -> int:
+    if header.get("DATA", "").lower() != "ascii":
         raise FaceModelValidationError("face model must be an ASCII PCD (DATA ascii)")
     if header.get("FIELDS", "").split() != ["x", "y", "z"]:
         raise FaceModelValidationError("face model must contain exactly PCD fields x y z")
     try:
-        expected_count = int(header["POINTS"])
-        points_mm = np.asarray(
-            [[float(component) for component in line.split()] for line in lines[data_line + 1 :] if line],
-            dtype=np.float64,
-        )
+        return int(header["POINTS"])
     except (KeyError, ValueError) as exc:
-        raise FaceModelValidationError("face model has an invalid PCD POINTS/data section") from exc
-    if points_mm.shape != (expected_count, 3):
+        raise FaceModelValidationError("face model has an invalid PCD POINTS header") from exc
+
+
+def _read_ascii_pcd(path: Path) -> MetricPoints:
+    lines = _read_pcd_lines(path)
+    header, data_line = _parse_pcd_header(lines)
+    expected_count = _validate_pcd_header(header)
+    values = np.fromstring("\n".join(lines[data_line + 1 :]), sep=" ", dtype=np.float64)
+    if values.size != expected_count * 3:
         raise FaceModelValidationError(
-            f"face model declares {expected_count} points but contains {points_mm.shape}"
+            f"face model declares {expected_count} points but contains {values.size // 3}"
         )
+    points_mm = values.reshape(expected_count, 3)
     if not np.isfinite(points_mm).all():
         raise FaceModelValidationError("face model contains non-finite coordinates")
     return points_mm
