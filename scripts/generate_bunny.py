@@ -3,6 +3,13 @@
 
 This is not the Stanford Bunny. It is composed from sampled ellipsoid surfaces so the
 archive has no external model/download dependency.
+
+NOTE (2026-08-17): the display asset at
+``src/headcoupled_display/static/assets/bunny.pcd`` has been replaced with the real
+Stanford Bunny (see ``scripts/import_stanford_bunny.py``). This script is kept only
+as the historical generator of that earlier synthetic placeholder; running it will
+overwrite the real scan with synthetic data again, so do not point it at the shipped
+asset path.
 """
 
 from __future__ import annotations

@@ -53,9 +53,16 @@ profile-summary path=profile:
 synthetic-calibration output="artifacts/synthetic_calibration_result.json":
     PYTHONPATH={{root}}/src {{python}} -m headcoupled_display.cli synthetic-calibrate --profile {{profile}} --output {{output}}
 
-# Generate the bundled synthetic bunny point cloud.
+# Generate the retired synthetic bunny point cloud (history only -- do not run this
+# against the shipped asset path, it would overwrite the real Stanford Bunny below).
 bunny:
     {{python}} scripts/generate_bunny.py --output src/headcoupled_display/static/assets/bunny.pcd
+
+# Regenerate the shipped bunny.pcd from the real Stanford Bunny PLY (bun_zipper,
+# 35947 vertices). The default `input` matches import_stanford_bunny.py's own
+# DEFAULT_INPUT; pass a different path if that local copy lives elsewhere.
+bunny-stanford input="/home/inaho-omen/open3d_data/extract/BunnyMesh/BunnyMesh.ply":
+    {{python}} scripts/import_stanford_bunny.py --input "{{input}}" --output src/headcoupled_display/static/assets/bunny.pcd
 
 # Unit and API tests. recorded_cuda is excluded as well as e2e: it needs a CUDA GPU,
 # the recording, the personal mesh and the tagcal intrinsics, so leaving it in would

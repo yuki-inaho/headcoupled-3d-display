@@ -179,7 +179,7 @@ def test_dashboard_websocket_renderer_and_calibration(tmp_path: Path) -> None:
             assert page.title() == "Head-Coupled 3D Display"
             assert "20.0 cm" in page.locator("#mount-height").inner_text()
             assert "10.0°" in page.locator("#mount-pitch").inner_text()
-            assert "13,810 points" in page.locator("#renderer-status").inner_text()
+            assert "35,947 points" in page.locator("#renderer-status").inner_text()
             assert (
                 page.locator("#camera-preview")
                 .get_attribute("src", timeout=10_000)
@@ -281,10 +281,11 @@ def test_recorded_facemesh_replay_drives_dashboard(tmp_path: Path) -> None:
 def test_browser_pcd_loader_reports_known_bunny_bounds() -> None:
     """`loadAsciiPcd` must report the AABB of the parsed points, not only positions.
 
-    Expected values for `static/assets/bunny.pcd` (13,810 points) were computed
+    Expected values for `static/assets/bunny.pcd` (35,947 points -- the real
+    Stanford Bunny, see `scripts/import_stanford_bunny.py`) were computed
     independently with NumPy over the same file, outside of this test and outside
     of `pcd.js`. `center` here is the AABB midpoint `(min + max) / 2`, which is
-    NOT the point centroid (`(-0.00378993, 0.22580822, 0.05619751)`); the two must
+    NOT the point centroid (`(0.02675991, 0.09521606, -0.00894711)`); the two must
     not be confused. This test calls the real browser-side `loadAsciiPcd` via a
     dynamic import so a bug in `pcd.js` cannot be hidden by a Python-side
     recomputation of the bounds.
@@ -343,13 +344,13 @@ def test_browser_pcd_loader_reports_known_bunny_bounds() -> None:
     finally:
         terminate_child(process)
 
-    assert loaded["pointCount"] == 13810
+    assert loaded["pointCount"] == 35947
     assert loaded["bounds"] is not None, f"loadAsciiPcd must return bounds, got: {loaded}"
-    assert loaded["bounds"]["min"] == pytest.approx([-0.5836868, -0.5006086, -0.5753633], abs=1e-6)
-    assert loaded["bounds"]["max"] == pytest.approx([0.5809016, 1.1862427, 0.4353630], abs=1e-6)
-    assert loaded["bounds"]["center"] == pytest.approx(
-        [-0.0013926, 0.34281705, -0.07000015], abs=1e-6
-    )
+    # The asset is written already turned to face the observer (+Z); see
+    # scripts/import_stanford_bunny.py. These bounds are the turned cloud's.
+    assert loaded["bounds"]["min"] == pytest.approx([-0.0610091, 0.0329874, -0.0587997], abs=1e-6)
+    assert loaded["bounds"]["max"] == pytest.approx([0.0946899, 0.1873210, 0.0618736], abs=1e-6)
+    assert loaded["bounds"]["center"] == pytest.approx([0.0168404, 0.1101542, 0.0015369], abs=1e-6)
 
 
 @pytest.mark.e2e
@@ -419,8 +420,8 @@ def test_point_cloud_is_anchored_on_the_display_plane() -> None:
     assert scene_id == "bunny-on-display-plane"
     # The AABB midpoint must land exactly on the screen plane anchor (0, 0, 0).
     assert centre == pytest.approx([0.0, 0.0, 0.0], abs=1e-6)
-    # Uniform scale derived from the asset, not hard-coded: 0.24 m / 1.6868513 m.
-    assert scale == pytest.approx(0.142276916, rel=1e-6)
+    # Uniform scale derived from the asset, not hard-coded: 0.24 m / 0.1556990 m.
+    assert scale == pytest.approx(1.541435719, rel=1e-6)
     span = [maximum[axis] - minimum[axis] for axis in range(3)]
     assert max(span) == pytest.approx(0.24, abs=1e-6)
     # The cloud straddles the window, so front and back show opposite parallax.
@@ -870,15 +871,14 @@ def test_browser_draw_latency_stays_within_a_frame() -> None:
     )
 
 
-@pytest.mark.e2e
-def test_the_scene_actually_reaches_the_drawing_buffer() -> None:
-    """Read the WebGL drawing buffer and assert the scene is really in it.
+def _read_drawing_buffer_pixels(scene_path: Path) -> dict[str, object]:
+    """Boot the synthetic dashboard against `scene_path` and read back its WebGL2
+    drawing buffer with `gl.readPixels`.
 
-    A Playwright screenshot is not adequate evidence here: under headless SwiftShader the
-    captured PNG shows only the CSS layer, so a completely blank renderer would produce a
-    screenshot indistinguishable from a working one. The footer reading
-    "WebGL2 / 13,810 points" is not evidence either -- it reports what was uploaded, not
-    what was drawn. readPixels is the only check that fails when nothing is drawn.
+    Shared by `test_the_scene_actually_reaches_the_drawing_buffer` to measure both a
+    real render and a render where the point cloud's on-screen footprint is shrunk to
+    nothing, so that test can compare the two instead of trusting a hard-coded guess
+    at what a "nothing drawn" buffer looks like.
     """
     port = free_port()
     env = os.environ.copy()
@@ -886,7 +886,7 @@ def test_the_scene_actually_reaches_the_drawing_buffer() -> None:
         {
             "PYTHONPATH": str(ROOT / "src"),
             "HEADCOUPLED_PROFILE": str(ROOT / "config" / "hardware_profile.demo.json"),
-            "HEADCOUPLED_SCENE": str(ROOT / "config" / "scene_profile.default.json"),
+            "HEADCOUPLED_SCENE": str(scene_path),
             "HEADCOUPLED_SOURCE": "synthetic",
         }
     )
@@ -947,12 +947,55 @@ def test_the_scene_actually_reaches_the_drawing_buffer() -> None:
             browser.close()
     finally:
         terminate_child(process)
+    return pixels
 
-    # pcd.js falls back to [0.80, 0.85, 0.92] when a PCD carries no colours, which is
-    # 204,216,232 after the 8-bit round trip. bunny.pcd has no colour fields, so every
-    # drawn point lands on exactly this value.
-    point_pixels = pixels["counts"].get("204,216,232", 0)
-    assert point_pixels > 1000, f"point cloud is not in the drawing buffer: {point_pixels} px"
 
-    # A blank buffer would be a single colour. The reference geometry adds several more.
-    assert pixels["distinct"] >= 4, pixels["distinct"]
+@pytest.mark.e2e
+def test_the_scene_actually_reaches_the_drawing_buffer(tmp_path: Path) -> None:
+    """Read the WebGL drawing buffer and assert the scene is really in it.
+
+    A Playwright screenshot is not adequate evidence here: under headless SwiftShader the
+    captured PNG shows only the CSS layer, so a completely blank renderer would produce a
+    screenshot indistinguishable from a working one. The footer reading
+    "WebGL2 / 35,947 points" is not evidence either -- it reports what was uploaded, not
+    what was drawn. readPixels is the only check that fails when nothing is drawn.
+
+    bunny.pcd now carries a rainbow ramp over height (see
+    scripts/import_stanford_bunny.py), so there is no single fixed "point colour" left
+    to count pixels of. Instead of guessing what a "nothing drawn" buffer looks like,
+    this test measures it in the same run: it re-renders the identical scene with
+    `longest_edge_m` shrunk to a millionth of a metre, which keeps the model matrix
+    non-degenerate (so the transform code still runs) but makes the cloud's on-screen
+    footprint sub-pixel -- exercising the exact same backdrop/grid/frame draw calls
+    with nothing visible from the point cloud. A renderer that silently failed to draw
+    the cloud would look like that baseline; a working one must look nothing like it.
+    """
+    default_scene_path = ROOT / "config" / "scene_profile.default.json"
+    pixels = _read_drawing_buffer_pixels(default_scene_path)
+
+    invisible_cloud_scene = json.loads(default_scene_path.read_text(encoding="utf-8"))
+    invisible_cloud_scene["longest_edge_m"] = 1e-6
+    invisible_cloud_scene_path = tmp_path / "scene_profile.no_visible_cloud.json"
+    invisible_cloud_scene_path.write_text(json.dumps(invisible_cloud_scene), encoding="utf-8")
+    baseline_pixels = _read_drawing_buffer_pixels(invisible_cloud_scene_path)
+
+    # Measured 2026-08-17 on this repository: baseline (cloud shrunk to invisible) = 19
+    # distinct colours (backdrop gradient, screen frame, both grids, all anti-aliased);
+    # the real render of all 35947 rainbow points = 27300. A 10x margin over the
+    # baseline measured in *this* run is comfortably below that real count while still
+    # failing hard if the cloud stops reaching the buffer.
+    assert pixels["distinct"] > baseline_pixels["distinct"] * 10, (
+        f"drawing buffer has only {pixels['distinct']} distinct colours, vs "
+        f"{baseline_pixels['distinct']} with the cloud shrunk to invisible -- the "
+        "rainbow point cloud does not appear to be reaching the drawing buffer"
+    )
+
+    # The ramp is bright against a dark scene, so a large share of clearly-lit pixels can
+    # only come from the cloud. Counted, rather than matching one exact colour, because
+    # the exact bytes now depend on where each point sits on the ramp.
+    lit = sum(
+        count
+        for key, count in pixels["counts"].items()
+        if sum(int(channel) for channel in key.split(",")) > 240
+    )
+    assert lit > 1000, f"point cloud is not in the drawing buffer: {lit} lit px"
