@@ -1001,3 +1001,105 @@ def test_the_scene_actually_reaches_the_drawing_buffer(tmp_path: Path) -> None:
         if sum(int(channel) for channel in key.split(",")) > 240
     )
     assert lit > 1000, f"point cloud is not in the drawing buffer: {lit} lit px"
+
+
+@pytest.mark.e2e
+def test_mouse_wheel_zoom_scales_the_scene_about_the_screen_origin() -> None:
+    """Mouse-wheel zoom is a scene-scale override applied about the screen origin.
+
+    Asserts numerically from the renderer's dataset readout, not from a screenshot:
+    the wheel must move the eased `data-zoom` toward the requested target, while
+    `data-model-scale` (the calibrated scene-profile placement) must stay at its
+    base value -- the zoom must never rewrite the calibrated geometry.
+    """
+    port = free_port()
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYTHONPATH": str(ROOT / "src"),
+            "HEADCOUPLED_PROFILE": str(ROOT / "config" / "hardware_profile.demo.json"),
+            "HEADCOUPLED_SCENE": str(ROOT / "config" / "scene_profile.default.json"),
+            "HEADCOUPLED_SOURCE": "synthetic",
+        }
+    )
+    command = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "headcoupled_display.api:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--log-level",
+        "warning",
+    ]
+    process = subprocess.Popen(
+        command,
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    base_url = f"http://127.0.0.1:{port}"
+    zoomed = 1.0
+    base_scale = 0.0
+    try:
+        wait_for_server(f"{base_url}/api/health", process)
+        with allow_localhost_for_managed_chromium(), sync_playwright() as playwright:
+            executable_path = os.getenv("HEADCOUPLED_CHROMIUM")
+            browser = playwright.chromium.launch(
+                headless=True,
+                executable_path=executable_path or None,
+                args=chromium_args(),
+            )
+            page = browser.new_page()
+            page.goto(base_url, wait_until="domcontentloaded")
+            canvas = page.locator("#gl-canvas")
+            canvas.wait_for(state="attached")
+            page.wait_for_function(
+                "() => document.querySelector('#gl-canvas')?.dataset.rendererReady === 'true'",
+                timeout=20000,
+            )
+            assert float(canvas.get_attribute("data-zoom")) == 1.0
+            assert float(canvas.get_attribute("data-zoom-target")) == 1.0
+            base_scale = float(canvas.get_attribute("data-model-scale"))
+
+            # Wheel up (deltaY<0) must request zoom-in (target 1.0 * 1.1 = 1.1).
+            canvas.dispatch_event("wheel", {"deltaY": -100, "deltaX": 0, "deltaMode": 0})
+            page.wait_for_function(
+                "() => Number(document.querySelector('#gl-canvas')?.dataset.zoomTarget) === 1.1",
+                timeout=10000,
+            )
+            page.wait_for_function(
+                "() => Number(document.querySelector('#gl-canvas')?.dataset.zoom) > 1.0",
+                timeout=10000,
+            )
+            zoomed = float(canvas.get_attribute("data-zoom"))
+            assert 1.0 < zoomed <= 1.1
+            # The calibrated placement is untouched by zoom.
+            assert float(canvas.get_attribute("data-model-scale")) == pytest.approx(
+                base_scale, abs=1e-9
+            )
+
+            # A second wheel-up compounds to 1.21, then R resets to exactly 1.0.
+            canvas.dispatch_event("wheel", {"deltaY": -100, "deltaX": 0, "deltaMode": 0})
+            page.wait_for_function(
+                "() => Math.abs(Number(document.querySelector('#gl-canvas')?.dataset.zoomTarget) - 1.21) < 1e-9",
+                timeout=10000,
+            )
+            page.keyboard.press("r")
+            page.wait_for_function(
+                "() => Number(document.querySelector('#gl-canvas')?.dataset.zoomTarget) === 1.0",
+                timeout=10000,
+            )
+            page.wait_for_function(
+                "() => Number(document.querySelector('#gl-canvas')?.dataset.zoom) < 1.01",
+                timeout=10000,
+            )
+            browser.close()
+    finally:
+        terminate_child(process)
+
+    assert zoomed > 1.0, "wheel zoom never moved off the base scale"

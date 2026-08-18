@@ -53,6 +53,30 @@ async function loadProfile() {
   // counters directly, without depending on live websocket timing to exercise bursts.
   // Not used by any production code path.
   window.__headcoupledRenderer = renderer;
+  const canvas = byId("gl-canvas");
+  // Interactive zoom (scene-scale around the screen-plane origin; see renderer.js).
+  // Wheel up magnifies, wheel down shrinks, double-click or R resets to 1.0. The
+  // zoom override never touches the calibrated head-coupled geometry: parallax is
+  // preserved because only the model scale changes, not the eye projection.
+  canvas.addEventListener(
+    "wheel",
+    (event) => {
+      event.preventDefault();
+      const rendererInstance = window.__headcoupledRenderer;
+      if (!rendererInstance) return;
+      const factor = Math.pow(1.1, -Math.sign(event.deltaY));
+      rendererInstance.setZoom((rendererInstance.zoomTarget ?? 1.0) * factor);
+    },
+    { passive: false },
+  );
+  canvas.addEventListener("dblclick", () => {
+    window.__headcoupledRenderer?.setZoom(1.0);
+  });
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "r" || event.key === "R") {
+      window.__headcoupledRenderer?.setZoom(1.0);
+    }
+  });
   const info = await renderer.load(scene.point_cloud_asset);
   // Diagnostics hook. The renderer is module-scoped, and end-to-end tests need the
   // browser-side draw latency it measures; exposing a read-only summary function is

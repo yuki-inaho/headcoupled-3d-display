@@ -51,3 +51,6 @@ scratch/
 # Raw capture from the operator's own machine. Only the converted, reviewed demo
 # under docs/assets/ is tracked.
 *.mov
+# Large tomato smoke point-cloud assets (regenerated; not to be committed).
+src/headcoupled_display/static/assets/tomato_*.pcd
+config/scene_tomato_*.json

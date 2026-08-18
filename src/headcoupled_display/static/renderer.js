@@ -4,6 +4,13 @@ import { loadAsciiPcd } from "./pcd.js";
 // debug window, not an unbounded log, so a fixed small size is intentional.
 const TIMING_RING_SIZE = 240;
 
+// Interactive zoom bounds and easing (mouse wheel). The cloud is scaled about the
+// screen-plane origin, so the clamp is generous; 1.0 is the scene-profile placement.
+const MIN_ZOOM = 0.1;
+const MAX_ZOOM = 20.0;
+const ZOOM_EASE = 0.2;
+const ZOOM_EPSILON = 1e-4;
+
 // A few millimetres of explicit separation between the back-wall grid and the backdrop
 // quad behind it. Both live at the scene profile's back_wall_z_m; without this offset
 // they would occupy the identical depth and flicker (z-fighting). This is the
@@ -248,6 +255,12 @@ export class PointCloudRenderer {
     this.display = display;
     this.scene = scene;
     this.model = null;
+    this.baseModel = null;
+    // Interactive zoom (mouse wheel): a multiplicative scale applied to the model
+    // around the screen-plane origin, keeping the head-coupled parallax intact.
+    // 1.0 is the scene-profile placement; wheel overrides it for inspection only.
+    this.zoom = 1.0;
+    this.zoomTarget = 1.0;
     this.eye = [0, 0, 0.67];
     this.pointCount = 0;
     this.positions = null;
@@ -405,6 +418,11 @@ export class PointCloudRenderer {
     // Computed once per asset, not per frame: the placement only depends on the
     // asset and the scene profile, neither of which changes while drawing.
     this.model = modelMatrixForBounds(this.scene, cloud.bounds);
+    this.baseModel = this.model;
+    // Zoom is a viewer override; reset it whenever a new scene is loaded so the
+    // zoomed state can never leak across scenes.
+    this.zoom = 1.0;
+    this.zoomTarget = 1.0;
     if (this.gl) {
       const gl = this.gl;
       gl.bindVertexArray(this.vao);
@@ -428,6 +446,8 @@ export class PointCloudRenderer {
     this.canvas.dataset.rendererMode = this.mode;
     this.canvas.dataset.sceneId = this.scene.scene_id ?? "";
     this.canvas.dataset.modelScale = String(this.model[0]);
+    this.canvas.dataset.zoom = String(this.zoom);
+    this.canvas.dataset.zoomTarget = String(this.zoomTarget);
     this.canvas.dataset.modelCenterDisplayM = JSON.stringify(placedCenter);
     this.canvas.dataset.modelMinDisplayM = JSON.stringify(placedMin);
     this.canvas.dataset.modelMaxDisplayM = JSON.stringify(placedMax);
@@ -474,6 +494,45 @@ export class PointCloudRenderer {
     if (this.viewMode === mode) return;
     this.viewMode = mode;
     this.scheduleDraw();
+  }
+
+  /**
+   * The model matrix actually drawn: the scene-profile placement scaled by the
+   * interactive zoom around the screen-plane origin (z=0, the anchor). At
+   * zoom === 1.0 this is exactly `baseModel`, so the default path is unchanged.
+   * Column-major 4x4.
+   */
+  zoomedModel() {
+    if (this.zoom === 1.0) return this.baseModel;
+    return multiplyMat4(scaleMatrix(this.zoom), this.baseModel);
+  }
+
+  /**
+   * Request a zoom target (mouse-wheel). Clamped to [MIN_ZOOM, MAX_ZOOM]; the
+   * current value eases toward it in updateZoom(), which keeps re-drawing until
+   * the two converge.
+   */
+  setZoom(target) {
+    const clamped = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Number(target) || 1.0));
+    if (!Number.isFinite(clamped)) return;
+    this.zoomTarget = clamped;
+    this.canvas.dataset.zoomTarget = String(clamped);
+    this.scheduleDraw();
+  }
+
+  /**
+   * Step the eased zoom toward the target. Returns true while still animating so
+   * draw() can keep the dirty scheduler alive without an unconditional loop.
+   */
+  updateZoom() {
+    if (Math.abs(this.zoom - this.zoomTarget) < ZOOM_EPSILON) {
+      if (this.zoom !== this.zoomTarget) this.zoom = this.zoomTarget;
+      return false;
+    }
+    this.zoom += (this.zoomTarget - this.zoom) * ZOOM_EASE;
+    if (Math.abs(this.zoom - this.zoomTarget) < ZOOM_EPSILON) this.zoom = this.zoomTarget;
+    this.canvas.dataset.zoom = String(this.zoom);
+    return true;
   }
 
   resize() {
@@ -555,7 +614,7 @@ export class PointCloudRenderer {
     const projection = projectionForDisplay(this.display, this.eye);
     const view = translationMatrix(-this.eye[0], -this.eye[1], -this.eye[2]);
     const viewProjection = multiplyMat4(projection, view);
-    const mvp = multiplyMat4(viewProjection, this.model);
+    const mvp = multiplyMat4(viewProjection, this.zoomedModel());
 
     // World pass: backdrop/wall/floor and the point cloud all share this
     // view/projection with depth testing on. The depth buffer -- not draw order --
@@ -595,9 +654,9 @@ export class PointCloudRenderer {
     ctx.fillRect(0, 0, width, height);
     if (!this.positions || !this.colors || !this.model) return;
     const eye = this.eye;
-    // Same model matrix as the WebGL path. Duplicating the placement constants here
-    // is what let the two paths drift apart before; only the rasterizer differs now.
-    const model = this.model;
+    // Same model matrix as the WebGL path (zoom included), so the two paths can
+    // never drift apart: only the rasterizer differs.
+    const model = this.zoomedModel();
     const scale = model[0];
     const stride = this.pointCount > 6000 ? 3 : 1;
     for (let index = 0; index < this.pointCount; index += stride) {
@@ -688,6 +747,10 @@ export class PointCloudRenderer {
 
   draw() {
     if (!this.running) return;
+    // Ease the interactive zoom toward its target before drawing; while it is still
+    // moving, request the next frame so the animation progresses without an
+    // unconditional redraw loop.
+    const zoomAnimating = this.updateZoom();
     const drawStartMs = performance.timeOrigin + performance.now();
     if (this.gl) this.drawWebGl();
     else this.drawCanvas2d();
@@ -697,6 +760,7 @@ export class PointCloudRenderer {
     this.recordTiming(drawStartMs, drawEndMs);
     this.canvas.dataset.drawCount = String(this.drawCount);
     this.canvas.dataset.lastRenderedSequence = String(this.lastRenderedSequence ?? -1);
+    if (zoomAnimating) this.scheduleDraw();
   }
 
   dispose() {
