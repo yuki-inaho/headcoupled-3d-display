@@ -137,39 +137,90 @@ function projectionForDisplay(display, eye, near = 0.05, far = 8.0) {
   return frustumMatrix(left, right, bottom, top, near, far);
 }
 
+function quaternionToMatrix(x, y, z, w) {
+  const norm = Math.sqrt(x * x + y * y + z * z + w * w);
+  if (norm < 1e-12) return scaleMatrix(1.0);
+  const sx = x / norm;
+  const sy = y / norm;
+  const sz = z / norm;
+  const sw = w / norm;
+  const out = new Float32Array(16);
+  out[0] = 1 - 2 * (sy * sy + sz * sz);
+  out[1] = 2 * (sx * sy + sz * sw);
+  out[2] = 2 * (sx * sz - sy * sw);
+  out[4] = 2 * (sx * sy - sz * sw);
+  out[5] = 1 - 2 * (sx * sx + sz * sz);
+  out[6] = 2 * (sy * sz + sx * sw);
+  out[8] = 2 * (sx * sz + sy * sw);
+  out[9] = 2 * (sy * sz - sx * sw);
+  out[10] = 1 - 2 * (sx * sx + sy * sy);
+  out[15] = 1;
+  return out;
+}
+
+function diagonalScaleMatrix(sx, sy, sz) {
+  const out = new Float32Array(16);
+  out[0] = sx;
+  out[5] = sy;
+  out[10] = sz;
+  out[15] = 1;
+  return out;
+}
+
 /**
- * Build `T(anchor) * S * T(-aabb_center)` for a cloud with the given bounds.
+ * Build the asset-to-display model matrix. Mirrors scene.scene_model_matrix in
+ * scene.py so WebGL and Canvas2D share one placement contract.
  *
- * Nothing about the asset's own coordinates is assumed: the scale comes from its
- * longest bounding-box edge and the offset from its bounding-box midpoint, so
- * swapping the asset cannot silently move the scene relative to the screen.
- * The midpoint is used rather than the centroid because the centroid follows
- * point density, which is a property of the scan, not of what should be framed.
+ * - `fit_longest_edge` (default): `T(anchor) * S * T(-aabb_center)`.
+ * - `metric`: `T(anchor) * R * S(1,1,depth_gain) * S(units*uniform) * T(-pivot)`,
+ *   where the pivot is selected by pivot_mode and R by asset_rotation_xyzw.
  *
- * @param {{anchor_display_m: number[], longest_edge_m: number}} scene
+ * @param {object} scene
  * @param {{min: number[], max: number[], center: number[]}} bounds
  * @returns {Float32Array} Column-major 4x4 model matrix.
  */
-function modelMatrixForBounds(scene, bounds) {
-  const span = [
-    bounds.max[0] - bounds.min[0],
-    bounds.max[1] - bounds.min[1],
-    bounds.max[2] - bounds.min[2],
-  ];
-  const longestEdge = Math.max(span[0], span[1], span[2]);
-  if (!Number.isFinite(longestEdge) || longestEdge <= 0) {
-    throw new Error("Point cloud bounding box is degenerate; cannot derive a uniform scale");
-  }
-  const scale = scene.longest_edge_m / longestEdge;
+function modelMatrixForScene(scene, bounds) {
+  const min = bounds.min;
+  const max = bounds.max;
+  const span = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
   const anchor = scene.anchor_display_m;
-  return multiplyMat4(
-    translationMatrix(
-      anchor[0] - scale * bounds.center[0],
-      anchor[1] - scale * bounds.center[1],
-      anchor[2] - scale * bounds.center[2],
-    ),
-    scaleMatrix(scale),
-  );
+  const mode = scene.placement_mode || "fit_longest_edge";
+  if (mode === "fit_longest_edge") {
+    const longestEdge = Math.max(span[0], span[1], span[2]);
+    if (!Number.isFinite(longestEdge) || longestEdge <= 0) {
+      throw new Error("Point cloud bounding box is degenerate; cannot derive a uniform scale");
+    }
+    const scale = scene.longest_edge_m / longestEdge;
+    return multiplyMat4(
+      translationMatrix(
+        anchor[0] - scale * bounds.center[0],
+        anchor[1] - scale * bounds.center[1],
+        anchor[2] - scale * bounds.center[2],
+      ),
+      scaleMatrix(scale),
+    );
+  }
+  // metric
+  const pivotMode = scene.pivot_mode || "aabb_center";
+  let pivot;
+  if (pivotMode === "aabb_center") {
+    pivot = [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2];
+  } else if (pivotMode === "aabb_bottom_center") {
+    pivot = [(min[0] + max[0]) / 2, min[1], (min[2] + max[2]) / 2];
+  } else {
+    pivot = scene.pivot_asset || [0, 0, 0];
+  }
+  const units = scene.asset_units_to_m || 1.0;
+  const uniform = (scene.uniform_scale || 1.0) * units;
+  const depthGain = scene.depth_gain || 1.0;
+  const rot = scene.asset_rotation_xyzw || [0, 0, 0, 1];
+  const rotation = quaternionToMatrix(rot[0], rot[1], rot[2], rot[3]);
+  // M = T(anchor) @ R @ S(1,1,depth_gain) @ S(units*uniform) @ T(-pivot*units).
+  // depth_gain sits after R so it acts in display-frame z (presentation only).
+  const toPivot = translationMatrix(-pivot[0] * units, -pivot[1] * units, -pivot[2] * units);
+  const scale = diagonalScaleMatrix(uniform, uniform, uniform * depthGain);
+  const place = translationMatrix(anchor[0], anchor[1], anchor[2]);
+  return multiplyMat4(place, multiplyMat4(rotation, multiplyMat4(scale, toPivot)));
 }
 
 function transformPoint(matrix, point) {
@@ -417,7 +468,7 @@ export class PointCloudRenderer {
     this.bounds = cloud.bounds;
     // Computed once per asset, not per frame: the placement only depends on the
     // asset and the scene profile, neither of which changes while drawing.
-    this.model = modelMatrixForBounds(this.scene, cloud.bounds);
+    this.model = modelMatrixForScene(this.scene, cloud.bounds);
     this.baseModel = this.model;
     // Zoom is a viewer override; reset it whenever a new scene is loaded so the
     // zoomed state can never leak across scenes.
@@ -496,6 +547,14 @@ export class PointCloudRenderer {
     this.scheduleDraw();
   }
 
+  /** Swap the active scene profile (immersive/verification) before reload(). */
+  setScene(scene) {
+    if (!scene || !Array.isArray(scene.anchor_display_m)) {
+      throw new Error("setScene requires a scene profile from /api/profile");
+    }
+    this.scene = scene;
+  }
+
   /**
    * The model matrix actually drawn: the scene-profile placement scaled by the
    * interactive zoom around the screen-plane origin (z=0, the anchor). At
@@ -504,7 +563,12 @@ export class PointCloudRenderer {
    */
   zoomedModel() {
     if (this.zoom === 1.0) return this.baseModel;
-    return multiplyMat4(scaleMatrix(this.zoom), this.baseModel);
+    // Zoom about the scene anchor, not the screen-plane origin, so a non-origin anchor
+    // does not drift when the user scales the cloud (geometry_6dof_review §5.7).
+    const anchor = this.scene.anchor_display_m;
+    const place = translationMatrix(anchor[0], anchor[1], anchor[2]);
+    const unplace = translationMatrix(-anchor[0], -anchor[1], -anchor[2]);
+    return multiplyMat4(place, multiplyMat4(scaleMatrix(this.zoom), multiplyMat4(unplace, this.baseModel)));
   }
 
   /**
@@ -654,16 +718,22 @@ export class PointCloudRenderer {
     ctx.fillRect(0, 0, width, height);
     if (!this.positions || !this.colors || !this.model) return;
     const eye = this.eye;
-    // Same model matrix as the WebGL path (zoom included), so the two paths can
-    // never drift apart: only the rasterizer differs.
+    if (eye[2] <= 1e-6) return; // mirror the WebGL path's invalid-eye rejection
+    // The full 4x4 model matrix (rotation, per-axis scale, pivot, depth gain, zoom) is
+    // applied per point so Canvas2D and WebGL can never drift apart (review §7).
     const model = this.zoomedModel();
-    const scale = model[0];
     const stride = this.pointCount > 6000 ? 3 : 1;
     for (let index = 0; index < this.pointCount; index += stride) {
       const offset = index * 3;
-      const px = this.positions[offset] * scale + model[12];
-      const py = this.positions[offset + 1] * scale + model[13];
-      const pz = this.positions[offset + 2] * scale + model[14];
+      const assetPoint = [
+        this.positions[offset],
+        this.positions[offset + 1],
+        this.positions[offset + 2],
+      ];
+      const placed = transformPoint(model, assetPoint);
+      const px = placed[0];
+      const py = placed[1];
+      const pz = placed[2];
       const denominator = eye[2] - pz;
       if (denominator <= 0.01) continue;
       const ratio = eye[2] / denominator;

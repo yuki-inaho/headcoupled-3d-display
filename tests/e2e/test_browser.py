@@ -430,6 +430,72 @@ def test_point_cloud_is_anchored_on_the_display_plane() -> None:
     assert minimum[2] < 0.0 < maximum[2]
 
 
+@pytest.mark.e2e
+def test_immersive_scene_lies_behind_the_screen() -> None:
+    """The immersive scene must place every point behind the display plane (z<0).
+
+    This is the counterpart of the verification scene: the same asset and scale, but
+    the anchor is shifted in z so the whole cloud reads as an object in the window
+    instead of poking through it (plan §6, DoD for item 5).
+    """
+    port = free_port()
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYTHONPATH": str(ROOT / "src"),
+            "HEADCOUPLED_PROFILE": str(ROOT / "config" / "hardware_profile.demo.json"),
+            "HEADCOUPLED_SCENE": str(ROOT / "config" / "scene_profile.immersive.json"),
+            "HEADCOUPLED_SOURCE": "synthetic",
+        }
+    )
+    command = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "headcoupled_display.api:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--log-level",
+        "warning",
+    ]
+    process = subprocess.Popen(
+        command,
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        wait_for_server(f"{base_url}/api/health", process)
+        with allow_localhost_for_managed_chromium(), sync_playwright() as playwright:
+            browser = _launch_chromium(playwright)
+            page = browser.new_page()
+            page.goto(base_url, wait_until="domcontentloaded")
+            canvas = page.locator("#gl-canvas")
+            canvas.wait_for(state="attached")
+            page.wait_for_function(
+                "() => document.querySelector('#gl-canvas')?.dataset.rendererReady === 'true'",
+                timeout=20000,
+            )
+            minimum = json.loads(canvas.get_attribute("data-model-min-display-m"))
+            maximum = json.loads(canvas.get_attribute("data-model-max-display-m"))
+            scene_id = canvas.get_attribute("data-scene-id")
+            browser.close()
+    finally:
+        terminate_child(process)
+
+    assert scene_id == "bunny-behind-screen-immersive"
+    # Every point sits behind the window; the front-most surface is still negative z.
+    assert maximum[2] < 0.0
+    # Same scale as the verification scene so only the depth placement differs.
+    span = [maximum[axis] - minimum[axis] for axis in range(3)]
+    assert max(span) == pytest.approx(0.24, abs=1e-6)
+
+
 def _launch_dashboard(playwright: object, port: int) -> tuple[object, str]:
     """Spawn the synthetic-source dashboard server; caller must terminate the process."""
 

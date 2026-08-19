@@ -21,16 +21,21 @@ def scene_model_matrix(
     bounds_min: Vector3,
     bounds_max: Vector3,
 ) -> FloatArray:
-    """Build ``T(anchor) @ S @ T(-aabb_center)`` for an asset with the given bounds.
+    """Build the static asset-to-display model matrix (plan §5.3).
 
-    The asset is uniformly scaled so that its longest bounding-box edge measures
-    ``scene.longest_edge_m`` on the physical screen, then its bounding-box midpoint is
-    moved onto ``scene.anchor_display_m``. Coordinates are display metres: origin at the
-    centre of the active area, +X right, +Y up, +Z toward the observer, screen at z=0.
+    ``fit_longest_edge`` (default, backward-compatible): ``T(anchor) @ S @ T(-aabb)``
+    with a uniform scale that fits the longest bounding-box edge to
+    ``scene.longest_edge_m``.
 
-    The midpoint is deliberately used rather than the centroid: the centroid follows the
-    point density of the model, so a denser base would push the visible object off the
-    window even though nothing about the display changed.
+    ``metric``: ``T(anchor) @ R @ S(1,1,depth_gain) @ S(units*uniform) @ T(-pivot)``
+    where ``R`` comes from ``asset_rotation_xyzw`` and the pivot is selected by
+    ``pivot_mode`` (aabb centre, aabb bottom centre, or explicit). ``longest_edge_m``
+    is intentionally unused in this mode -- a metre-calibrated asset keeps its size.
+
+    Coordinates are display metres: origin at the centre of the active area, +X right,
+    +Y up, +Z toward the observer, screen at z=0. The midpoint is used rather than the
+    centroid: the centroid follows point density, so a denser base would push the
+    visible object off the window even though nothing about the display changed.
     """
 
     minimum = np.asarray(bounds_min, dtype=np.float64)
@@ -43,17 +48,71 @@ def scene_model_matrix(
     if np.any(span < 0.0):
         raise ValueError("bounds_max must be greater than or equal to bounds_min")
 
-    longest_edge = float(span.max())
-    if longest_edge <= 0.0:
-        raise ValueError("asset bounding box is degenerate; cannot derive a uniform scale")
-
-    scale = scene.longest_edge_m / longest_edge
-    centre = 0.5 * (minimum + maximum)
     anchor = np.asarray(scene.anchor_display_m, dtype=np.float64)
 
+    if scene.placement_mode == "fit_longest_edge":
+        longest_edge = float(span.max())
+        if longest_edge <= 0.0:
+            raise ValueError("asset bounding box is degenerate; cannot derive a uniform scale")
+        scale = scene.longest_edge_m / longest_edge
+        centre = 0.5 * (minimum + maximum)
+        matrix = np.eye(4, dtype=np.float64)
+        matrix[0, 0] = matrix[1, 1] = matrix[2, 2] = scale
+        matrix[:3, 3] = anchor - scale * centre
+        return matrix
+
+    # metric mode
+    pivot = _resolve_pivot(scene, minimum, maximum)
+    units = scene.asset_units_to_m
+    isotropic = units * scene.uniform_scale
+    rotation = _quaternion_to_matrix(scene.asset_rotation_xyzw)
+    scale_matrix = np.diag(
+        np.array([isotropic, isotropic, isotropic * scene.depth_gain, 1.0], dtype=np.float64)
+    )
+    # M = T(anchor) @ R @ S(1,1,depth_gain) @ S(units*uniform) @ T(-pivot).
+    # The depth_gain sits after R so it acts in the display-frame z (presentation).
+    transform = np.eye(4, dtype=np.float64)
+    transform[:3, :3] = rotation[:3, :3]
+    to_pivot = np.eye(4, dtype=np.float64)
+    to_pivot[:3, 3] = -pivot * units
+    placement = np.eye(4, dtype=np.float64)
+    placement[:3, 3] = anchor
+    return placement @ transform @ scale_matrix @ to_pivot
+
+
+def _resolve_pivot(scene: SceneProfile, minimum: FloatArray, maximum: FloatArray) -> FloatArray:
+    if scene.pivot_mode == "aabb_center":
+        return 0.5 * (minimum + maximum)
+    if scene.pivot_mode == "aabb_bottom_center":
+        return np.array(
+            [
+                0.5 * (minimum[0] + maximum[0]),
+                minimum[1],
+                0.5 * (minimum[2] + maximum[2]),
+            ],
+            dtype=np.float64,
+        )
+    return np.asarray(scene.pivot_asset, dtype=np.float64)
+
+
+def _quaternion_to_matrix(xyzw: tuple[float, float, float, float]) -> FloatArray:
+    """Convert ``[x, y, z, w]`` to a 4x4 rotation matrix (no external dependency)."""
+
+    x, y, z, w = (float(c) for c in xyzw)
+    norm = (x * x + y * y + z * z + w * w) ** 0.5
+    if norm < 1e-12:
+        return np.eye(4, dtype=np.float64)
+    x, y, z, w = x / norm, y / norm, z / norm, w / norm
     matrix = np.eye(4, dtype=np.float64)
-    matrix[0, 0] = matrix[1, 1] = matrix[2, 2] = scale
-    matrix[:3, 3] = anchor - scale * centre
+    matrix[0, 0] = 1.0 - 2.0 * (y * y + z * z)
+    matrix[0, 1] = 2.0 * (x * y - z * w)
+    matrix[0, 2] = 2.0 * (x * z + y * w)
+    matrix[1, 0] = 2.0 * (x * y + z * w)
+    matrix[1, 1] = 1.0 - 2.0 * (x * x + z * z)
+    matrix[1, 2] = 2.0 * (y * z - x * w)
+    matrix[2, 0] = 2.0 * (x * z - y * w)
+    matrix[2, 1] = 2.0 * (y * z + x * w)
+    matrix[2, 2] = 1.0 - 2.0 * (x * x + y * y)
     return matrix
 
 

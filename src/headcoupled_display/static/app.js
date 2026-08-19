@@ -6,10 +6,10 @@ const setText = (id, value) => { const element = byId(id); if (element) element.
 const format = (value, digits = 2) => Number(value).toFixed(digits);
 const wsUrl = (path) => `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}${path}`;
 
-// The physical display's width/height ratio (config/hardware_profile.*.json's
-// display.width_m / height_m). Used only to warn when the browser viewport's aspect
-// ratio has drifted from the real screen it is meant to represent.
-const PHYSICAL_ASPECT_RATIO = 0.596 / 0.335;
+// The physical display's width/height ratio. Loaded from /api/profile instead of a
+// hard-coded constant: a different display profile must not silently keep warning
+// against the demo 0.596 / 0.335 ratio. Updated in loadProfile().
+let physicalAspectRatio = 0.596 / 0.335;
 const ASPECT_TOLERANCE = 0.02;
 
 let renderer = null;
@@ -47,6 +47,7 @@ async function loadProfile() {
   }
   const scene = payload.scene_profile;
   if (!scene) throw new Error("Profile response carries no scene_profile");
+  physicalAspectRatio = profile.display.width_m / profile.display.height_m;
   renderer = new PointCloudRenderer(byId("gl-canvas"), profile.display, scene);
   renderer.setViewMode(document.body.dataset.viewMode || "verification");
   // Exposed only so the Playwright E2E suite can drive setEye()/read scheduler debug
@@ -196,6 +197,30 @@ function setViewMode(mode) {
   const button = byId("mode-toggle-button");
   button.setAttribute("aria-pressed", String(mode === "immersive"));
   button.textContent = mode === "immersive" ? "検証モードへ" : "没入モードへ";
+  // The immersive/verification split is a placement choice, so switching modes swaps
+  // the scene profile (and reloads the cloud) instead of only toggling the HUD. The
+  // tracking runtime is untouched (plan §10 E12).
+  if (mode === "immersive") {
+    void switchScene("bunny-behind-screen-immersive");
+  } else {
+    void switchScene(null);
+  }
+}
+
+async function switchScene(sceneId) {
+  if (!renderer) return;
+  try {
+    const response = await fetch(`/api/profile?scene=${sceneId ?? ""}`, { cache: "no-store" });
+    if (!response.ok) throw new Error(`Scene switch failed: ${response.status}`);
+    const payload = await response.json();
+    const scene = payload.scene_profile;
+    renderer.setScene(scene);
+    await renderer.load(scene.point_cloud_asset);
+    updateSceneVerificationHud(scene);
+  } catch (error) {
+    console.error(error);
+    statusChip("warn", `シーン切替失敗: ${error.message}`);
+  }
 }
 
 /**
@@ -209,7 +234,7 @@ function updateAspectState() {
   const warning = byId("aspect-warning");
   if (rect.height <= 0) return;
   const viewportAspect = rect.width / rect.height;
-  const relativeError = Math.abs(viewportAspect - PHYSICAL_ASPECT_RATIO) / PHYSICAL_ASPECT_RATIO;
+  const relativeError = Math.abs(viewportAspect - physicalAspectRatio) / physicalAspectRatio;
   const aspectOk = relativeError <= ASPECT_TOLERANCE;
   document.body.dataset.aspectOk = String(aspectOk);
   const isFullscreen = Boolean(document.fullscreenElement);
@@ -224,7 +249,7 @@ function updateAspectState() {
   }
   warning.hidden = false;
   warning.textContent = isFullscreen
-    ? `警告: 全画面表示のアスペクト比(${viewportAspect.toFixed(3)})が物理ディスプレイ(${PHYSICAL_ASPECT_RATIO.toFixed(3)})と${(relativeError * 100).toFixed(1)}%ずれています。表示配置を確認してください。`
+    ? `警告: 全画面表示のアスペクト比(${viewportAspect.toFixed(3)})が物理ディスプレイ(${physicalAspectRatio.toFixed(3)})と${(relativeError * 100).toFixed(1)}%ずれています。表示配置を確認してください。`
     : "物理投影は未検証です。全画面表示にすると実ディスプレイとの一致を確認できます。";
 }
 

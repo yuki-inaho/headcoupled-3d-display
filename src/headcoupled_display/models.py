@@ -278,6 +278,18 @@ class SceneProfile(StrictModel):
     floor_y_m: float = -0.14
     floor_near_z_m: float = 0.05
     floor_far_z_m: float = -0.30
+    # Point-cloud placement (plan §5.2). All optional with backward-compatible defaults
+    # so the existing scenes (default/depthramp/synthetic) keep their fit-longest-edge
+    # behaviour unchanged. ``metric`` is opt-in for new, metre-calibrated assets.
+    placement_mode: Literal["fit_longest_edge", "metric"] = "fit_longest_edge"
+    asset_units_to_m: float = Field(default=1.0, gt=0.0)
+    asset_rotation_xyzw: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
+    pivot_mode: Literal["aabb_center", "aabb_bottom_center", "explicit"] = "aabb_center"
+    pivot_asset: Vector3 = (0.0, 0.0, 0.0)
+    uniform_scale: float = Field(default=1.0, gt=0.0)
+    # Display-frame depth gain (z, after rotation). A presentation choice kept separate
+    # from calibration; compresses/re emphasises depth without changing xy size.
+    depth_gain: float = Field(default=1.0, gt=0.0)
     quality_metrics: dict[str, float | str | int | bool | None] = Field(default_factory=dict)
     notes: tuple[str, ...] = ()
     created_at: str = Field(default_factory=utc_now_iso)

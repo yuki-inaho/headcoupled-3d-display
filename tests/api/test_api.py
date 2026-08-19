@@ -44,6 +44,42 @@ def test_profile_endpoint_exposes_the_scene_separately_from_calibration() -> Non
         assert payload["mount_summary"]["height_above_center_cm"] == 20.0
 
 
+def test_local_profile_warns_about_synthetic_intrinsics() -> None:
+    """The mount-confirmed-but-intrinsics-placeholder provenance must be visible."""
+
+    app = create_app(
+        profile_path=ROOT / "config" / "hardware_profile.local.json",
+        user_profile_path=ROOT / "config" / "user_profile.demo.json",
+        scene_path=ROOT / "config" / "scene_profile.default.json",
+        source="synthetic",
+    )
+    with TestClient(app) as client:
+        payload = client.get("/api/profile").json()
+        assert payload["warning"] is not None
+        assert "未実測" in payload["warning"] or "プレースホルダ" in payload["warning"]
+        assert payload["mount_summary"]["height_above_center_cm"] == 15.0
+
+
+def test_profile_scene_query_switches_the_scene_only() -> None:
+    """?scene=<id> swaps the returned scene_profile without touching the runtime."""
+
+    with make_client() as client:
+        payload = client.get("/api/profile?scene=bunny-behind-screen-immersive").json()
+        assert payload["scene_profile"]["scene_id"] == "bunny-behind-screen-immersive"
+        assert payload["scene_profile"]["anchor_display_m"][2] < 0.0
+        # Hardware profile and mount are untouched by a scene switch.
+        assert payload["hardware_profile"]["profile_id"] == "demo-27inch-centered-camera"
+
+        default = client.get("/api/profile").json()
+        assert default["scene_profile"]["scene_id"] == "bunny-on-display-plane"
+
+
+def test_profile_unknown_scene_is_404() -> None:
+    with make_client() as client:
+        response = client.get("/api/profile?scene=does-not-exist")
+        assert response.status_code == 404
+
+
 def test_scene_profile_with_a_back_wall_in_front_of_the_screen_is_refused(tmp_path: Path) -> None:
     broken = tmp_path / "scene.json"
     broken.write_text(

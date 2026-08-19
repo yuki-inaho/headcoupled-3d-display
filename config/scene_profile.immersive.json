@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "scene_id": "bunny-behind-screen-immersive",
+  "point_cloud_asset": "/static/assets/bunny.pcd",
+  "anchor_display_m": [
+    0.0,
+    0.0,
+    -0.11
+  ],
+  "longest_edge_m": 0.24,
+  "grid_spacing_m": 0.05,
+  "back_wall_z_m": -0.3,
+  "floor_y_m": -0.14,
+  "floor_near_z_m": 0.05,
+  "floor_far_z_m": -0.3,
+  "placement_mode": "fit_longest_edge",
+  "quality_metrics": {
+    "asset_point_count": 35947,
+    "asset_longest_edge_m": 0.155699,
+    "derived_uniform_scale": 1.541435719
+  },
+  "notes": [
+    "通常（没入）表示用シーン。検証シーン(config/scene_profile.default.json)とスケール・点群は同一で、anchor_display_m.z だけを -0.11 へ移動したもの。",
+    "この配置でbunnyはおおよそ z∈[-0.203, -0.017] に収まり、全点が画面奥(画面より後ろ)に入る。画面手前への突出を抑え、調節・輻輳・運動視差の整合を取る。",
+    "plan_se3_pose_filter_and_calibration.md §6.2 は metric を想定していたが、検証シーンとの A/B 比較（スケールを同一に保ち奥行き配置だけ変える）を優先し fit_longest_edge のまま anchor z だけ移動する。metric 配置は test_scene_profile.py で検証済み。",
+    "後壁・床・グリッド間隔は検証シーンと同一。画面枠HUDは viewMode=immersive で非表示になる。",
+    "これは表示上の選択であり較正結果ではない。ハードウェアプロファイルとは別ファイルに保つこと。"
+  ],
+  "created_at": "2026-08-19T13:00:00+00:00"
+}

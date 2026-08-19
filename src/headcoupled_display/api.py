@@ -94,6 +94,44 @@ def default_scene_profile_path() -> Path:
     return _first_existing(candidates)
 
 
+def scene_profile_by_id(scene_id: str) -> SceneProfile | None:
+    """Look up a shipped scene profile by ``scene_id`` for ``/api/profile?scene=``.
+
+    Scene switching is renderer-only (plan §10 E12): the tracking runtime is never
+    touched. Only the ``config/scene_profile.*.json`` files next to the repo are
+    scanned, so an unknown id is an explicit 404 rather than a silent fallback.
+    """
+
+    config_dir = Path.cwd() / "config"
+    if not config_dir.is_dir():
+        config_dir = PACKAGE_ROOT.parent / "config"
+    if not config_dir.is_dir():
+        return None
+    for candidate in sorted(config_dir.glob("scene_profile.*.json")):
+        try:
+            scene = SceneProfile.load(candidate)
+        except (OSError, ValueError):
+            continue
+        if scene.scene_id == scene_id:
+            return scene
+    return None
+
+
+def resolve_profile_scene(startup_scene: SceneProfile, scene_id: str | None) -> SceneProfile:
+    """Return the scene for ``/api/profile`` given the optional ``?scene=`` query.
+
+    ``None`` or the startup scene id returns the startup scene unchanged; an unknown
+    id raises HTTP 404 (explicit failure, never an implicit fallback).
+    """
+
+    if scene_id is None or scene_id == startup_scene.scene_id:
+        return startup_scene
+    matched = scene_profile_by_id(scene_id)
+    if matched is None:
+        raise HTTPException(status_code=404, detail=f"unknown scene_id: {scene_id}")
+    return matched
+
+
 def _provider_factory(
     source: TrackingSource,
     hardware: HardwareProfile,
@@ -178,6 +216,12 @@ def _profile_warning(hardware: HardwareProfile) -> str | None:
         )
     if hardware.provenance == "synthetic_demo_not_measured":
         return "同梱プロファイルは実測値ではなく、動作確認用の人工値です。"
+    if hardware.provenance == "user_confirmed_mount_synthetic_intrinsics":
+        return (
+            "カメラの設置、高さ・俯角は実機確認済みですが、カメラ内部パラメータ・"
+            "ディスプレイ実寸・前後オフセットは未実測のプレースホルダです。"
+            "実運用前にtagcal較正と外部姿勢の実測が必要です。"
+        )
     return None
 
 
@@ -253,7 +297,7 @@ def _lifespan(context: _ApplicationContext) -> Callable[[FastAPI], AsyncIterator
 
 
 def _register_http_routes(application: FastAPI, context: _ApplicationContext) -> None:
-    hardware, user, scene, runtime, selected_source = (
+    hardware, user, startup_scene, runtime, selected_source = (
         context.hardware,
         context.user,
         context.scene,
@@ -278,12 +322,13 @@ def _register_http_routes(application: FastAPI, context: _ApplicationContext) ->
         }
 
     @application.get("/api/profile")
-    async def profile() -> dict[str, object]:
+    async def profile(scene: str | None = None) -> dict[str, object]:
         summary = summarize_profile(hardware)
+        selected_scene = resolve_profile_scene(startup_scene, scene)
         return {
             "hardware_profile": hardware.model_dump(mode="json"),
             "user_profile": user.model_dump(mode="json"),
-            "scene_profile": scene.model_dump(mode="json"),
+            "scene_profile": selected_scene.model_dump(mode="json"),
             "mount_summary": summary.model_dump(mode="json"),
             "coordinate_convention": {
                 "display": "origin=center, +X=right, +Y=up, +Z=toward viewer",

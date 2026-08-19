@@ -175,3 +175,86 @@ def test_transformed_bunny_straddles_the_display_plane() -> None:
 
     assert near[2] > 0.0
     assert far[2] < 0.0
+
+
+def test_metric_mode_keeps_asset_metre_size() -> None:
+    """In metric mode, uniform_scale*asset_units_to_m sets the physical size; the
+    longest_edge_m field is ignored."""
+
+    span = np.array(BUNNY_MAX) - np.array(BUNNY_MIN)
+    scene = SceneProfile(
+        scene_id="metric",
+        point_cloud_asset="/static/assets/bunny.pcd",
+        placement_mode="metric",
+        asset_units_to_m=1.0,
+        uniform_scale=1.0,
+        anchor_display_m=(0.0, 0.0, 0.0),
+    )
+    matrix = scene_model_matrix(scene, bounds_min=BUNNY_MIN, bounds_max=BUNNY_MAX)
+    transformed_span = (matrix @ np.diag([*span, 1.0]))[:3].max()
+    # No fit: the largest physical edge equals the asset's own longest edge.
+    assert transformed_span == pytest.approx(BUNNY_LONGEST_EDGE_M, abs=1e-9)
+
+
+def test_metric_mode_places_pivot_at_anchor() -> None:
+    scene = SceneProfile(
+        scene_id="pivot",
+        point_cloud_asset="/static/assets/bunny.pcd",
+        placement_mode="metric",
+        pivot_mode="aabb_center",
+        anchor_display_m=(0.05, -0.02, -0.11),
+    )
+    matrix = scene_model_matrix(scene, bounds_min=BUNNY_MIN, bounds_max=BUNNY_MAX)
+    centre = matrix @ np.array([*BUNNY_CENTER, 1.0])
+    assert centre[:3] == pytest.approx(scene.anchor_display_m, abs=1e-9)
+
+
+def test_metric_mode_bottom_pivot_anchors_the_floor() -> None:
+    scene = SceneProfile(
+        scene_id="bottom",
+        point_cloud_asset="/static/assets/bunny.pcd",
+        placement_mode="metric",
+        pivot_mode="aabb_bottom_center",
+        anchor_display_m=(0.0, -0.14, 0.0),
+    )
+    matrix = scene_model_matrix(scene, bounds_min=BUNNY_MIN, bounds_max=BUNNY_MAX)
+    bottom_center = np.array(
+        [
+            0.5 * (BUNNY_MIN[0] + BUNNY_MAX[0]),
+            BUNNY_MIN[1],
+            0.5 * (BUNNY_MIN[2] + BUNNY_MAX[2]),
+        ]
+    )
+    placed = matrix @ np.array([*bottom_center, 1.0])
+    assert placed[:3] == pytest.approx(scene.anchor_display_m, abs=1e-9)
+
+
+def test_depth_gain_compresses_display_z_only() -> None:
+    scene = SceneProfile(
+        scene_id="depth",
+        point_cloud_asset="/static/assets/bunny.pcd",
+        placement_mode="metric",
+        depth_gain=0.5,
+        anchor_display_m=(0.0, 0.0, 0.0),
+    )
+    matrix = scene_model_matrix(scene, bounds_min=BUNNY_MIN, bounds_max=BUNNY_MAX)
+    # xy scale stays 1.0; z scale is half.
+    assert matrix[0, 0] == pytest.approx(1.0)
+    assert matrix[1, 1] == pytest.approx(1.0)
+    assert matrix[2, 2] == pytest.approx(0.5)
+
+
+def test_asset_rotation_orients_the_cloud() -> None:
+    # 180deg about display +Y maps asset +x to -x. Use a unit cube at origin.
+    scene = SceneProfile(
+        scene_id="rotated",
+        point_cloud_asset="/static/assets/bunny.pcd",
+        placement_mode="metric",
+        asset_rotation_xyzw=(0.0, 1.0, 0.0, 0.0),  # 180deg about y
+        pivot_mode="explicit",
+        pivot_asset=(0.0, 0.0, 0.0),
+        anchor_display_m=(0.0, 0.0, 0.0),
+    )
+    matrix = scene_model_matrix(scene, bounds_min=(-1.0, 0.0, 0.0), bounds_max=(1.0, 0.0, 0.0))
+    point = matrix @ np.array([1.0, 0.0, 0.0, 1.0])
+    assert point[0] == pytest.approx(-1.0, abs=1e-9)
