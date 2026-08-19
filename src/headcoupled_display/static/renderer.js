@@ -129,7 +129,13 @@ function frustumMatrix(left, right, bottom, top, near, far) {
 }
 
 function projectionForDisplay(display, eye, near = 0.05, far = 8.0) {
-  const distance = Math.max(eye[2], 0.2);
+  const distance = eye[2] <= 1e-6 ? null : eye[2];
+  if (distance === null) {
+    // An invalid (at/below-screen) eye must be rejected upstream by tracking_valid;
+    // never partially clamp the projection only, which would use a different eye from
+    // the view matrix. Caller is expected to hold the last good pose instead.
+    return null;
+  }
   const left = (near * (-display.width_m / 2 - eye[0])) / distance;
   const right = (near * (display.width_m / 2 - eye[0])) / distance;
   const bottom = (near * (-display.height_m / 2 - eye[1])) / distance;
@@ -676,6 +682,11 @@ export class PointCloudRenderer {
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     if (this.pointCount === 0 || !this.model) return;
     const projection = projectionForDisplay(this.display, this.eye);
+    if (projection === null) {
+      // An at/below-screen eye was rejected: hold the last frame rather than drawing
+      // with a partially-clamped projection that disagrees with the view matrix.
+      return;
+    }
     const view = translationMatrix(-this.eye[0], -this.eye[1], -this.eye[2]);
     const viewProjection = multiplyMat4(projection, view);
     const mvp = multiplyMat4(viewProjection, this.zoomedModel());

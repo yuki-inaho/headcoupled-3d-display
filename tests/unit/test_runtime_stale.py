@@ -15,19 +15,20 @@ from headcoupled_display.runtime import RuntimeCoordinator
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def make_state(sequence: int) -> TrackingState:
+def make_state(sequence: int, *, tracking_valid: bool = True) -> TrackingState:
     return TrackingState(
         sequence=sequence,
         timestamp_unix_s=0.0,
         source="synthetic",
-        confidence=1.0,
+        confidence=1.0 if tracking_valid else 0.0,
         cyclopean_eye_display_m=(0.01, 0.02, 0.6),
         left_eye_display_m=(-0.02, 0.02, 0.6),
         right_eye_display_m=(0.04, 0.02, 0.6),
         head_forward_display=(0.0, 0.0, -1.0),
         tracking_fps=30.0,
         inference_ms=5.0,
-        stable=True,
+        stable=tracking_valid,
+        tracking_valid=tracking_valid,
         diagnostics={"face_count": 1},
     )
 
@@ -133,3 +134,46 @@ def test_a_stall_shorter_than_the_threshold_is_not_reported_as_stale() -> None:
             await coordinator.stop()
 
     assert asyncio.run(run()) is False
+
+
+class InvalidThenValidProvider:
+    """One good frame, then a long run of tracking_valid=False frames (no raise)."""
+
+    def __init__(self, invalid_samples: int) -> None:
+        self.invalid_samples = invalid_samples
+        self.calls = 0
+        self.closed = False
+
+    def sample(self) -> tuple[TrackingState, bytes]:
+        self.calls += 1
+        if self.calls == 1:
+            return make_state(self.calls, tracking_valid=True), b"\xff\xd8jpeg"
+        return make_state(self.calls, tracking_valid=False), b"\xff\xd8jpeg"
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_sustained_invalid_states_eventually_publish_stale() -> None:
+    """tracking_valid=False must not refresh the success clock (plan §10 B3)."""
+
+    async def run() -> TrackingState:
+        provider = InvalidThenValidProvider(invalid_samples=10)
+        coordinator = RuntimeCoordinator(
+            hardware(), lambda: provider, target_fps=200.0, stale_after_s=0.0
+        )
+        await coordinator.start()
+        try:
+            generation = 0
+            state = TrackingState.__new__(  # placeholder; overwritten below
+                TrackingState
+            )
+            for _ in range(8):
+                generation, state = await coordinator.wait_for_state(generation, timeout_s=5.0)
+            return state
+        finally:
+            await coordinator.stop()
+
+    state = asyncio.run(run())
+    assert state.diagnostics.get("stale") is True
+    assert state.confidence == 0.0

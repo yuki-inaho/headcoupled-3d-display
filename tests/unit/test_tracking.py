@@ -16,6 +16,7 @@ from headcoupled_display.face_model import (
     canonical_face_model,
     load_personal_face_model,
 )
+from headcoupled_display.filtering import Se3EKF, Se3PoseFilter
 from headcoupled_display.models import CameraIntrinsics, CameraMount, HardwareProfile, UserProfile
 from headcoupled_display.tracking import (
     FaceMeshFrameSource,
@@ -23,6 +24,7 @@ from headcoupled_display.tracking import (
     FaceMeshObservation,
     FaceMeshPoseProvider,
     FaceMeshReplayProvider,
+    HeadPoseEstimate,
     HeadPoseEstimator,
 )
 
@@ -155,6 +157,150 @@ def test_face_model_points_are_immutable_after_runtime_type_validation() -> None
     assert not model.points_head_m.flags.writeable
     with pytest.raises(ValueError, match="read-only"):
         model.points_head_m[0, 0] = 1.0
+
+
+def test_estimate_pose_returns_reprojection_quality(hardware: HardwareProfile) -> None:
+    estimator = HeadPoseEstimator(hardware, UserProfile())
+    landmarks, _, _ = synthetic_landmarks(estimator)
+    estimate = estimator.estimate_pose(landmarks, timestamp_unix_ns=1_000_000)
+    assert isinstance(estimate, HeadPoseEstimate)
+    # A noise-free synthetic projection reproduces the 12 points exactly.
+    assert estimate.reprojection_rms_px < 1e-6
+    assert estimate.inlier_count == len(estimator.LANDMARK_INDICES)
+    assert estimate.timestamp_unix_ns == 1_000_000
+    # T_S_H must be a proper rigid transform.
+    rotation = estimate.T_S_H[:3, :3]
+    assert np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-9)
+
+
+def test_eyes_from_pose_preserves_ipd(hardware: HardwareProfile) -> None:
+    estimator = HeadPoseEstimator(hardware, UserProfile())
+    landmarks, rvec, tvec = synthetic_landmarks(estimator)
+    estimator.estimate_pose(landmarks)  # warm the PnP path; result not needed here
+    rotation, _ = cv2.Rodrigues(rvec)
+    # An arbitrary rotated/translated pose must keep the inter-ocular distance fixed.
+    big = np.eye(4)
+    big[:3, :3] = rotation
+    big[:3, 3] = tvec.reshape(3) + np.array([0.1, -0.05, 0.2])
+    left, right, _, _ = estimator.eyes_from_pose(big)
+    expected_ipd = float(np.linalg.norm(estimator.left_eye_head_m - estimator.right_eye_head_m))
+    assert np.isclose(np.linalg.norm(left - right), expected_ipd, atol=1e-12)
+
+
+class _ScriptedSource:
+    """An in-memory FaceMeshFrameSource that serves a queue of landmark sets."""
+
+    def __init__(self, landmark_sets: list[np.ndarray]) -> None:
+        self._sets = landmark_sets
+        self._index = 0
+        self.closed = False
+
+    def next_frame(self) -> FaceMeshInputFrame:
+        landmarks = self._sets[self._index % len(self._sets)]
+        self._index += 1
+        return FaceMeshInputFrame(
+            frame_bgr=np.zeros((720, 1280, 3), dtype=np.uint8),
+            faces=(FaceMeshObservation(score=0.99, landmarks_xy=landmarks),),
+            label="test",
+            frame_index=self._index - 1,
+        )
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_provider_emits_filtered_pose_fields(hardware: HardwareProfile) -> None:
+    estimator = HeadPoseEstimator(hardware, UserProfile())
+    landmarks, _, _ = synthetic_landmarks(estimator)
+    provider = FaceMeshPoseProvider(
+        hardware,
+        UserProfile(),
+        source="replay",
+        frame_source=_ScriptedSource([landmarks]),
+    )
+    state, _ = provider.sample()
+    provider.close()
+    assert state.tracking_valid is True
+    assert state.cyclopean_eye_display_m[2] > 0.0
+    assert state.head_position_display_m is not None
+    assert state.head_orientation_display_xyzw is not None
+    assert state.reprojection_rms_px is not None
+    assert state.reprojection_rms_px < 1e-6
+
+
+def test_provider_default_filter_is_ekf(hardware: HardwareProfile) -> None:
+    provider = FaceMeshPoseProvider(
+        hardware,
+        UserProfile(),
+        source="replay",
+        frame_source=_ScriptedSource([np.zeros((478, 2), dtype=np.float64)]),
+    )
+    assert isinstance(provider._filter, Se3EKF)
+    provider.close()
+
+
+def test_provider_pose_filter_ema_switches_filter(hardware: HardwareProfile) -> None:
+    ema_hardware = hardware.model_copy(
+        update={"quality_metrics": {**hardware.quality_metrics, "pose_filter": "ema"}}
+    )
+    provider = FaceMeshPoseProvider(
+        ema_hardware,
+        UserProfile(),
+        source="replay",
+        frame_source=_ScriptedSource([np.zeros((478, 2), dtype=np.float64)]),
+    )
+    assert isinstance(provider._filter, Se3PoseFilter)
+    provider.close()
+
+
+def test_provider_pose_filter_ekf_switches_filter(hardware: HardwareProfile) -> None:
+    ekf_hardware = hardware.model_copy(
+        update={"quality_metrics": {**hardware.quality_metrics, "pose_filter": "ekf"}}
+    )
+    provider = FaceMeshPoseProvider(
+        ekf_hardware,
+        UserProfile(),
+        source="replay",
+        frame_source=_ScriptedSource([np.zeros((478, 2), dtype=np.float64)]),
+    )
+    assert isinstance(provider._filter, Se3EKF)
+    provider.close()
+
+
+def test_provider_pose_filter_unknown_raises(hardware: HardwareProfile) -> None:
+    bad_hardware = hardware.model_copy(
+        update={"quality_metrics": {**hardware.quality_metrics, "pose_filter": "kalman"}}
+    )
+    with pytest.raises(ValueError, match="pose_filter"):
+        FaceMeshPoseProvider(
+            bad_hardware,
+            UserProfile(),
+            source="replay",
+            frame_source=_ScriptedSource([np.zeros((478, 2), dtype=np.float64)]),
+        )
+
+
+def test_provider_outlier_rejection_keeps_last_good(hardware: HardwareProfile) -> None:
+    estimator = HeadPoseEstimator(hardware, UserProfile())
+    landmarks, _, _ = synthetic_landmarks(estimator)
+    bad_landmarks = landmarks.copy()
+    bad_landmarks[estimator.LANDMARK_INDICES] += 200.0
+    provider = FaceMeshPoseProvider(
+        hardware,
+        UserProfile(),
+        source="replay",
+        frame_source=_ScriptedSource([landmarks, bad_landmarks]),
+    )
+    good_state, _ = provider.sample()
+    rejected_state, _ = provider.sample()
+    provider.close()
+    assert rejected_state.tracking_valid is False
+    assert rejected_state.diagnostics.get("rejection") in {"velocity_gate", "reprojection_rms"}
+    assert np.allclose(
+        rejected_state.cyclopean_eye_display_m,
+        good_state.cyclopean_eye_display_m,
+        atol=1e-9,
+    )
 
 
 def test_recorded_landmarks_and_video_replay_through_metric_pose(

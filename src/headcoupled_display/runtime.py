@@ -96,8 +96,15 @@ class RuntimeCoordinator:
                     await self._publish_stale()
                 await asyncio.sleep(0.25)
             else:
-                last_success = loop.time()
                 await self._publish(state, frame)
+                # A low-confidence state (plan §10 B3) is not a success for staleness:
+                # if the provider keeps returning held poses at confidence 0 without
+                # ever raising, the runtime must still go stale after stale_after_s so
+                # a dead-but-not-exceptional input cannot be rendered as a still head.
+                if getattr(state, "tracking_valid", True):
+                    last_success = loop.time()
+                elif loop.time() - last_success >= self._stale_after_s:
+                    await self._publish_stale()
             elapsed = loop.time() - started
             await asyncio.sleep(max(0.0, self._target_period - elapsed))
 

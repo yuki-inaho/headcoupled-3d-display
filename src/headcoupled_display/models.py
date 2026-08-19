@@ -183,6 +183,18 @@ class TrackingState(StrictModel):
     inference_ms: float = Field(ge=0)
     stable: bool
     diagnostics: dict[str, Any] = Field(default_factory=dict)
+    # SE(3) pose-filter fields (docs/plan_se3_pose_filter_and_calibration.md §3.7).
+    # All optional with defaults so existing providers and fixtures stay valid; the
+    # single source of truth for the eyes above is now T_S_H + head-frame offsets.
+    pose_timestamp_unix_ns: int | None = None
+    head_position_display_m: Vector3 | None = None
+    head_orientation_display_xyzw: tuple[float, float, float, float] | None = None
+    linear_velocity_display_m_s: Vector3 | None = None
+    angular_velocity_display_rad_s: Vector3 | None = None
+    reprojection_rms_px: float | None = Field(default=None, ge=0.0)
+    inlier_count: int | None = Field(default=None, ge=0)
+    tracking_valid: bool = True
+    predicted_to_unix_ns: int | None = None
 
 
 class CalibrationSample(StrictModel):
