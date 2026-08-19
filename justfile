@@ -38,11 +38,15 @@ replay-recording landmarks video face_model intrinsics host="127.0.0.1" port="80
     PYTHONPATH={{root}}/src {{python}} -m headcoupled_display.cli serve --host {{host}} --port {{port}} --profile {{profile_path}} --scene {{scene_path}} --source replay --replay-landmarks "{{landmarks}}" --replay-video "{{video}}" --face-model "{{face_model}}" --intrinsics "{{intrinsics}}"
 
 # Start the 3D dashboard ready for a separate Python-3.10 FaceMesh producer on localhost.
+# NOTE: this just (1.40) does not accept `recipe name=value`; pass the two required
+# values positionally: `just serve-ipc <face_model.pcd> <calibration.json>`.
 serve-ipc face_model intrinsics host="127.0.0.1" port="8000" profile_path=local_profile scene_path=scene_profile:
     PYTHONPATH={{root}}/src {{python}} -m headcoupled_display.cli serve --host {{host}} --port {{port}} --profile {{profile_path}} --scene {{scene_path}} --source ipc --face-model "{{face_model}}" --intrinsics "{{intrinsics}}"
 
 # Run this in the FaceMesh Python/CUDA environment after `serve-ipc` is ready.
-facemesh-ipc endpoint="http://127.0.0.1:8000/api/input/facemesh" device="/dev/video0":
+# NOTE: this just (1.40) does not accept `recipe name=value`; `device` is the first
+# positional value: `just facemesh-ipc /dev/video0`.
+facemesh-ipc device="/dev/video0" endpoint="http://127.0.0.1:8000/api/input/facemesh":
     cd {{facemesh_project}} && uv run python {{root}}/scripts/facemesh_ipc_producer.py --camera "{{device}}" --endpoint "{{endpoint}}"
 
 # Validate and summarize a hardware profile.
