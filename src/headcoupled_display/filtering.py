@@ -1,7 +1,7 @@
 """Stage-1 SE(3) pose filter and stage-2 on-manifold EKF.
 
 Stage 1 (``Se3PoseFilter``) is the design from
-``docs/plan_se3_pose_filter_and_calibration.md`` §10 (review item C4): a
+``temp/plan_se3_pose_filter_and_calibration.md`` §10 (review item C4): a
 geodesic exponential moving average on SE(3) with a smoothed body-frame twist,
 used for a *fixed-horizon* short-term prediction.
 
@@ -26,10 +26,12 @@ from . import lie
 
 FloatArray = NDArray[np.float64]
 
-#: Default prediction horizon. Stage 1 keeps this fixed (review item B2): dynamic
-#: horizon requires the still-unresolved <2 ms clock sync and is equivalent to the
-#: out-of-scope display-time interpolation (item 6).
-DEFAULT_PREDICTION_HORIZON_S = 1.0 / 30.0
+#: Default prediction horizon. Set from the real-user recording identification
+#: (temp/workdoc_Aug19-2026_se3_ekf_stage2.md §7): cross-correlation lag is 0 for
+#: the EKF, and the horizon that best compensates the display-time pipeline delay
+#: on test10 is ~16 ms (prediction error 2.1 mm for EKF / 2.9 mm for EMA; 33 ms
+#: grows to 3.2/8.2 mm as head acceleration breaks the constant-velocity model).
+DEFAULT_PREDICTION_HORIZON_S = 0.016
 HORIZON_LIMIT_S = 0.1
 
 #: Velocity gate. A frame-to-frame motion faster than these is rejected as an

@@ -45,7 +45,7 @@
 | 入力の出自 | `docs/input_manifest.md` | 外部入力の所在・ライセンス・検証状況 |
 | 配布物レビュー | `docs/source_review.md` | 受領時のコードレビュー結果 |
 | 第三者著作物 | `docs/input_manifest.md` | Stanford Bunnyの出自と利用条件の原文（**商用利用は要許諾**） |
-| 実装計画（未実装） | `docs/plan_se3_pose_filter_and_calibration.md` | 改善項目1–5（実測較正・SE(3)姿勢フィルタ・眼位置再計算・点群配置拡張・検証/没入シーン分離）の実装計画と自己レビュー。SE(3)フィルタは arXiv:1812.01537（Solà, micro Lie theory）ベース。**未実装**。項目6（表示時刻補間）は対象外 |
+| 実装計画（未実装） | `temp/plan_se3_pose_filter_and_calibration.md` | 改善項目1–5（実測較正・SE(3)姿勢フィルタ・眼位置再計算・点群配置拡張・検証/没入シーン分離）の実装計画と自己レビュー。SE(3)フィルタは arXiv:1812.01537（Solà, micro Lie theory）ベース。**未実装**。項目6（表示時刻補間）は対象外 |
 
 ---
 

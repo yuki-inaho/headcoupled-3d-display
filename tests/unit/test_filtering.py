@@ -1,6 +1,6 @@
 """SE(3) manifold EMA pose filter and on-manifold EKF with constant velocity.
 
-Stage-1 filter per docs/plan_se3_pose_filter_and_calibration.md §10 C4: a manifold
+Stage-1 filter per temp/plan_se3_pose_filter_and_calibration.md §10 C4: a manifold
 EMA on SE(3) plus a smoothed body-frame twist used for a fixed-horizon prediction.
 Stage-2 EKF (same plan §10 C4 follow-up): on-manifold EKF with state dimension 12
 (SE(3) x R^6 body twist) implementing the same :class:`PoseFilter` contract.

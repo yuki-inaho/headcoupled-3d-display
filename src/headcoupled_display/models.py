@@ -183,7 +183,7 @@ class TrackingState(StrictModel):
     inference_ms: float = Field(ge=0)
     stable: bool
     diagnostics: dict[str, Any] = Field(default_factory=dict)
-    # SE(3) pose-filter fields (docs/plan_se3_pose_filter_and_calibration.md §3.7).
+    # SE(3) pose-filter fields (temp/plan_se3_pose_filter_and_calibration.md §3.7).
     # All optional with defaults so existing providers and fixtures stay valid; the
     # single source of truth for the eyes above is now T_S_H + head-frame offsets.
     pose_timestamp_unix_ns: int | None = None
